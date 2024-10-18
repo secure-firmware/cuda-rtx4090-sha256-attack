@@ -1,54 +1,67 @@
-#include <iostream>
 #include <cuda_runtime.h>
+#include <stdio.h>
+#include <stdint.h>
 
-// Define character set
-const char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-const int charset_size = sizeof(charset) - 1;  // Excluding terminating null
+// SHA256 function declarations (we'll implement them later)
 
-// Function to convert thread ID to a password
-__device__ void generate_password(unsigned long long id, char *password) {
+// Utility function to generate the 6-character password
+__device__ void generate_password(uint64_t index, char* password) {
+    const char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    int base = 62;
     for (int i = 5; i >= 0; --i) {
-        password[i] = charset[id % charset_size];
-        id /= charset_size;
+        password[i] = charset[index % base];
+        index /= base;
     }
-    password[6] = '\0';  // Null-terminate the string
 }
 
-// Kernel function to perform hashing and comparison
-__global__ void crack_sha256(const char *target_hash, const char *salt, int salt_length) {
-    unsigned long long id = blockDim.x * blockIdx.x + threadIdx.x;
+// CUDA kernel for brute-forcing SHA256(password + salt)
+__global__ void brute_force_sha256(const uint32_t* target_hash, const char* salt, uint64_t total_combinations) {
+    uint64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= total_combinations) return;
 
-    char password[7];
-    generate_password(id, password);
+    char password[7] = {0};  // For a 6-character password
 
-    // Concatenate password with salt
-    char input[256]; // make sure this is big enough for salt + password
-    strcpy(input, password);
-    strcat(input, salt);
+    // Generate password for this thread
+    generate_password(idx, password);
 
-    // Hash the resulting input
-    // (This requires a SHA256 implementation, for example, using OpenSSL or CUDA-style SHA libraries)
+    // Compute SHA256(password + salt)
+    uint32_t hash_output[8];  // SHA256 generates a 256-bit hash (8 x 32 bits)
 
-    // Here we would compare the hash to target_hash to see if it matches
-    // For illustration, let's assume a match is found
-    // (This part is a placeholder and needs a real SHA256 implementation)
-    if (id == 123456) { // Mock condition for demonstration
+    // Call SHA256 function (to be implemented)
+    sha256(password, salt, hash_output);
+
+    // Compare the computed hash with the target hash
+    bool match = true;
+    for (int i = 0; i < 8; i++) {
+        if (hash_output[i] != target_hash[i]) {
+            match = false;
+            break;
+        }
+    }
+
+    // If the hash matches, print the password
+    if (match) {
         printf("Password found: %s\n", password);
     }
 }
 
 int main() {
-    const char *target_hash = "mock_hash_value";  // You will use the real hash here
-    const char *salt = "somesalt";  // Example salt
+    // Total number of possible password combinations: 62^6
+    uint64_t total_combinations = pow(62, 6);
 
-    // TODO: Replace with actual GPU setup and SHA256 library integration
+    // Input: target hash and salt
+    uint32_t target_hash[8] = { /* your target hash values here */ };
+    const char* salt = "29944fd0a74f515d";  // Example salt
 
-    int num_threads = 256;
-    int num_blocks = 1024;
-    
-    // Launch the kernel
-    crack_sha256<<<num_blocks, num_threads>>>(target_hash, salt, strlen(salt));
+    // Define the grid and block sizes
+    int threads_per_block = 256;
+    int blocks_per_grid = (total_combinations + threads_per_block - 1) / threads_per_block;
 
+    // Launch the CUDA kernel
+    brute_force_sha256<<<blocks_per_grid, threads_per_block>>>(target_hash, salt, total_combinations);
+
+    // Wait for GPU to finish
     cudaDeviceSynchronize();
+
     return 0;
 }
