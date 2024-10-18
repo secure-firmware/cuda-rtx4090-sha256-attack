@@ -1,15 +1,16 @@
 #include <iostream>
+#include <sstream>
 #include <cuda_runtime.h>
 
 // Define charset for password generation
 __constant__ char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-const int base = 62;  // Charset length (lower + upper + numbers)
+const int base = 62; // Charset length (lower + upper + numbers)
 const int password_length = 6;
 const int salt_length = 16;
-const char salt[] = "671ddddb8aa8eec9";  // The example salt
+const char salt[] = "671ddddb8aa8eec9"; // The example salt
 
 // Predefined hash we're trying to match
-const char predefined_hash_hex[] = "e5d339e275ad5badd55a8dda1ff3ed7c6b2bcbd55a16327c3d7abcb5a8f87744";
+const char predefined_hash_hex[] = "922482f6e20e95a35a3d150860bb1f03003c4f264e1dc7377e91b10eac5f8f10";
 
 // SHA256 constants
 __constant__ static const uint32_t K[64] = {
@@ -28,58 +29,71 @@ __constant__ static const uint32_t K[64] = {
     0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
     0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
-    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
-};
+    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
 
 // Custom device-compatible string copy function
-__device__ void cuda_strcpy(char* dest, const char* src) {
-    while (*src) {
+__device__ void cuda_strcpy(char *dest, const char *src)
+{
+    while (*src)
+    {
         *dest++ = *src++;
     }
-    *dest = '\0';  // Null terminate
+    *dest = '\0'; // Null terminate
 }
 
 // Custom device-compatible string concatenate function
-__device__ void cuda_strcat(char* dest, const char* src) {
-    while (*dest) dest++;  // Move pointer to the end of dest
-    while (*src) {
+__device__ void cuda_strcat(char *dest, const char *src)
+{
+    while (*dest)
+        dest++; // Move pointer to the end of dest
+    while (*src)
+    {
         *dest++ = *src++;
     }
-    *dest = '\0';  // Null terminate
+    *dest = '\0'; // Null terminate
 }
 
 // Custom device-compatible string length function
-__device__ size_t cuda_strlen(const char* str) {
+__device__ size_t cuda_strlen(const char *str)
+{
     size_t len = 0;
-    while (*str++) len++;
+    while (*str++)
+        len++;
     return len;
 }
 
 // SHA256 utility functions
-__device__ __host__ static uint32_t rotr(uint32_t x, uint32_t n) {
+__device__ __host__ static uint32_t rotr(uint32_t x, uint32_t n)
+{
     return (x >> n) | (x << (32 - n));
 }
 
-__device__ __host__ static uint32_t choose(uint32_t e, uint32_t f, uint32_t g) {
+__device__ __host__ static uint32_t choose(uint32_t e, uint32_t f, uint32_t g)
+{
     return (e & f) ^ (~e & g);
 }
 
-__device__ __host__ static uint32_t majority(uint32_t a, uint32_t b, uint32_t c) {
+__device__ __host__ static uint32_t majority(uint32_t a, uint32_t b, uint32_t c)
+{
     return (a & (b | c)) | (b & c);
 }
 
-__device__ __host__ static uint32_t sig0(uint32_t x) {
+__device__ __host__ static uint32_t sig0(uint32_t x)
+{
     return rotr(x, 7) ^ rotr(x, 18) ^ (x >> 3);
 }
 
-__device__ __host__ static uint32_t sig1(uint32_t x) {
+__device__ __host__ static uint32_t sig1(uint32_t x)
+{
     return rotr(x, 17) ^ rotr(x, 19) ^ (x >> 10);
 }
 
 // SHA256 class definition
-class SHA256 {
+class SHA256
+{
 public:
-    __device__ __host__ SHA256() {
+    __device__ __host__ SHA256()
+    {
         m_blocklen = 0;
         m_bitlen = 0;
         m_state[0] = 0x6a09e667;
@@ -92,10 +106,13 @@ public:
         m_state[7] = 0x5be0cd19;
     }
 
-    __device__ __host__ void update(const uint8_t* data, size_t length) {
-        for (size_t i = 0; i < length; i++) {
+    __device__ __host__ void update(const uint8_t *data, size_t length)
+    {
+        for (size_t i = 0; i < length; i++)
+        {
             m_data[m_blocklen++] = data[i];
-            if (m_blocklen == 64) {
+            if (m_blocklen == 64)
+            {
                 transform();
                 m_bitlen += 512;
                 m_blocklen = 0;
@@ -103,34 +120,40 @@ public:
         }
     }
 
-    __device__ __host__ void finalize(uint8_t* hash) {
+    __device__ __host__ void finalize(uint8_t *hash)
+    {
         pad();
         revert(hash);
     }
 
 private:
-    uint8_t  m_data[64];
+    uint8_t m_data[64];
     uint32_t m_blocklen;
     uint64_t m_bitlen;
     uint32_t m_state[8]; // A, B, C, D, E, F, G, H
 
-    __device__ __host__ void transform() {
+    __device__ __host__ void transform()
+    {
         uint32_t maj, xorA, ch, xorE, sum, newA, newE, m[64];
         uint32_t state[8];
 
-        for (uint8_t i = 0, j = 0; i < 16; i++, j += 4) {
+        for (uint8_t i = 0, j = 0; i < 16; i++, j += 4)
+        {
             m[i] = (m_data[j] << 24) | (m_data[j + 1] << 16) | (m_data[j + 2] << 8) | m_data[j + 3];
         }
 
-        for (uint8_t k = 16; k < 64; k++) {
+        for (uint8_t k = 16; k < 64; k++)
+        {
             m[k] = sig1(m[k - 2]) + m[k - 7] + sig0(m[k - 15]) + m[k - 16];
         }
 
-        for(uint8_t i = 0 ; i < 8 ; i++) {
+        for (uint8_t i = 0; i < 8; i++)
+        {
             state[i] = m_state[i];
         }
 
-        for (uint8_t i = 0; i < 64; i++) {
+        for (uint8_t i = 0; i < 64; i++)
+        {
             maj = majority(state[0], state[1], state[2]);
             xorA = rotr(state[0], 2) ^ rotr(state[0], 13) ^ rotr(state[0], 22);
             ch = choose(state[4], state[5], state[6]);
@@ -149,21 +172,25 @@ private:
             state[0] = newA;
         }
 
-        for(uint8_t i = 0 ; i < 8 ; i++) {
+        for (uint8_t i = 0; i < 8; i++)
+        {
             m_state[i] += state[i];
         }
     }
 
-    __device__ __host__ void pad() {
+    __device__ __host__ void pad()
+    {
         uint64_t i = m_blocklen;
         uint8_t end = m_blocklen < 56 ? 56 : 64;
 
         m_data[i++] = 0x80; // Append 1 bit followed by zeros
-        while (i < end) {
+        while (i < end)
+        {
             m_data[i++] = 0x00;
         }
 
-        if(m_blocklen >= 56) {
+        if (m_blocklen >= 56)
+        {
             transform();
             memset(m_data, 0, 56);
         }
@@ -180,9 +207,12 @@ private:
         transform();
     }
 
-    __device__ __host__ void revert(uint8_t* hash) {
-        for (uint8_t i = 0; i < 4; i++) {
-            for(uint8_t j = 0; j < 8; j++) {
+    __device__ __host__ void revert(uint8_t *hash)
+    {
+        for (uint8_t i = 0; i < 4; i++)
+        {
+            for (uint8_t j = 0; j < 8; j++)
+            {
                 hash[i + (j * 4)] = (m_state[j] >> (24 - i * 8)) & 0x000000ff;
             }
         }
@@ -190,71 +220,88 @@ private:
 };
 
 // Convert a hex string to a byte array
-__host__ void hex_to_bytes(const char* hex, uint8_t* bytes) {
-    for (int i = 0; i < 32; i++) {
+__host__ void hex_to_bytes(const char *hex, uint8_t *bytes)
+{
+    for (int i = 0; i < 32; i++)
+    {
         sscanf(hex + 2 * i, "%2hhx", &bytes[i]);
     }
 }
 
-__host__ void bytes_to_hex(const uint8_t* bytes, char* hex) {
-    for (int i = 0; i < 32; i++) {
-        sprintf(hex + 2 * i, "%02x", bytes[i]);
-        hex[2 * i + 1] = '\0';
+__device__ __host__ void hash_to_string(const uint8_t *hash, char *output)
+{
+    const char hex_digits[] = "0123456789abcdef";
+
+    for (int i = 0; i < 32; ++i)
+    {
+        output[i * 2] = hex_digits[(hash[i] >> 4) & 0x0F]; // Upper nibble
+        output[i * 2 + 1] = hex_digits[hash[i] & 0x0F];    // Lower nibble
     }
+
+    output[64] = '\0'; // Null-terminate the string
 }
 
-
 // Check if two byte arrays are equal
-__device__ __host__ bool compare_hashes(const uint8_t* hash1, const uint8_t* hash2) {
-    for (int i = 0; i < 32; i++) {
-        if (hash1[i] != hash2[i]) {
+__device__ __host__ bool compare_hashes(const uint8_t *hash1, const uint8_t *hash2)
+{
+    for (int i = 0; i < 32; i++)
+    {
+        if (hash1[i] != hash2[i])
+        {
             return false;
         }
     }
     return true;
 }
 
-__global__ void brute_force_kernel(const char* salt, const uint8_t* target_hash, char* result, unsigned long long total_ids, uint8_t* temp_hash) {
+__device__ int password_found = 0;
+
+__global__ void brute_force_kernel(const char *salt, const uint8_t *target_hash, char *result, unsigned long long total_ids, uint8_t *temp_hash)
+{
     unsigned long long id = blockIdx.x * blockDim.x + threadIdx.x;
-    if (id > total_ids) return;
+
+    // If the password is already found, exit early
+    if (password_found || id >= total_ids) return;
 
     char password[password_length + 1];
     char combined[password_length + salt_length + 1];
     uint8_t hash[32];
 
+    unsigned long long temp_id = id;
     for (size_t i = 0; i < password_length; i++)
     {
-        password[i] = charset[id % base];
-        id /= base;
+        password[i] = charset[temp_id % base];
+        temp_id /= base;
     }
     password[password_length] = '\0';
     cuda_strcpy(combined, password);
     cuda_strcat(combined, salt);
 
-    cuda_strcpy(password, combined);
-
     // Hash the combined password+salt
     SHA256 sha;
-    sha.update((uint8_t*)combined, cuda_strlen(combined));
+    sha.update((uint8_t *)combined, cuda_strlen(combined));
     sha.finalize(hash);
 
-    cuda_strcpy(result, "Not Found");
     // Compare the hash to the target hash
-    if (compare_hashes(hash, target_hash)) {
-        cuda_strcpy(result, "Found");  // If found, store the password in the result
-    }
-
-    for(size_t i = 0; i < 32; i++){
-        temp_hash[i] = hash[i];
+    if (compare_hashes(hash, target_hash))
+    {
+        // Use atomicExch to ensure only one thread writes the result
+        if (atomicExch(&password_found, 1) == 0)
+        {
+            cuda_strcpy(result, password);  // Copy the found password to result
+            for (size_t i = 0; i < 32; i++)
+            {
+                temp_hash[i] = hash[i];  // Copy the found hash to temp_hash
+            }
+        }
     }
 }
-
 
 int main()
 {
 
     uint8_t temp_hash[32];
-    uint8_t* d_temp_hash;
+    uint8_t *d_temp_hash;
     char temp_hex[65];
     cudaMalloc(&d_temp_hash, sizeof(temp_hash));
 
@@ -263,35 +310,45 @@ int main()
 
     // Define the number of possible passwords (62^6)
     unsigned long long total_passwords = 1;
-    for (int i = 0; i < password_length; i++) {
+    for (int i = 0; i < password_length; i++)
+    {
         total_passwords *= base;
     }
 
     // Allocate memory for the password and combined string
-    char* d_salt;
+    char *d_salt;
     cudaMalloc(&d_salt, salt_length + 1);
     cudaMemcpy(d_salt, salt, salt_length + 1, cudaMemcpyHostToDevice);
 
-    char* d_result;
+    char *d_result;
     cudaMalloc(&d_result, password_length + salt_length + 1);
+    cudaMemset(d_result, 0, password_length + salt_length + 1);
 
-    uint8_t* d_target_hash;
+
+    uint8_t *d_target_hash;
     cudaMalloc(&d_target_hash, sizeof(target_hash));
     cudaMemcpy(d_target_hash, target_hash, sizeof(target_hash), cudaMemcpyHostToDevice);
 
-    brute_force_kernel<<<1, 1>>>(d_salt, d_target_hash, d_result, total_passwords, d_temp_hash);
+    // Launch brute-force kernel
+    int threads_per_block = 256;
+    unsigned long long blocks_per_grid = (total_passwords + threads_per_block - 1) / threads_per_block;
+    brute_force_kernel<<<blocks_per_grid, threads_per_block>>>(d_salt, d_target_hash, d_result, total_passwords, d_temp_hash);
     cudaDeviceSynchronize();
+
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::cerr << "CUDA Error: " << cudaGetErrorString(err) << std::endl;
+    }
+
 
     char result[password_length + salt_length + 1];
     cudaMemcpy(result, d_result, password_length + salt_length + 1, cudaMemcpyDeviceToHost);
     std::cout << "Result: " << result << std::endl;
     cudaMemcpy(temp_hash, d_temp_hash, sizeof(temp_hash), cudaMemcpyDeviceToHost);
-    hex_to_bytes(predefined_hash_hex, temp_hash);
-    bytes_to_hex(temp_hash, temp_hex);
-    std::cout << "Temp Hex: " << temp_hex << std::endl;
-    std::cout << "Target Hash: " << predefined_hash_hex << std::endl;
-    std::cout << "Temp hash: " << temp_hash << std::endl;
+    hash_to_string(temp_hash, temp_hex);
 
+    std::cout << "Target Hash: " << predefined_hash_hex << std::endl;
+    std::cout << "Temp hex: " << temp_hex << std::endl;
 
     cudaFree(d_temp_hash);
     cudaFree(d_salt);
