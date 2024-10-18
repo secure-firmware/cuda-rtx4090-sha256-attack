@@ -1,6 +1,6 @@
 #include <iostream>
-#include <cstring>
 #include <cuda_runtime.h>
+#include <cstring>
 
 // Define charset for password generation
 __constant__ char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -9,7 +9,7 @@ const int password_length = 6;
 const char salt[] = "671ddddb8aa8eec9";  // The example salt
 
 // Predefined hash we're trying to match
-const char predefined_hash_hex[] = "34333c09faae0d8affbc2120d8a0642e80ff5b92250a3b867e6fc7341ef763f2";
+const char predefined_hash_hex[] = "1b1852f46753d69c684c2fe8ea065a9dd8a1ae8fdabe43eb1b9aae8a88d91632";
 
 // SHA256 constants
 __constant__ static const uint32_t K[64] = {
@@ -76,7 +76,118 @@ __device__ __host__ static uint32_t sig1(uint32_t x) {
     return rotr(x, 17) ^ rotr(x, 19) ^ (x >> 10);
 }
 
-// SHA256 class definition (same as before, removed for brevity)
+// SHA256 class definition
+class SHA256 {
+public:
+    __device__ __host__ SHA256() {
+        m_blocklen = 0;
+        m_bitlen = 0;
+        m_state[0] = 0x6a09e667;
+        m_state[1] = 0xbb67ae85;
+        m_state[2] = 0x3c6ef372;
+        m_state[3] = 0xa54ff53a;
+        m_state[4] = 0x510e527f;
+        m_state[5] = 0x9b05688c;
+        m_state[6] = 0x1f83d9ab;
+        m_state[7] = 0x5be0cd19;
+    }
+
+    __device__ __host__ void update(const uint8_t* data, size_t length) {
+        for (size_t i = 0; i < length; i++) {
+            m_data[m_blocklen++] = data[i];
+            if (m_blocklen == 64) {
+                transform();
+                m_bitlen += 512;
+                m_blocklen = 0;
+            }
+        }
+    }
+
+    __device__ __host__ void finalize(uint8_t* hash) {
+        pad();
+        revert(hash);
+    }
+
+private:
+    uint8_t  m_data[64];
+    uint32_t m_blocklen;
+    uint64_t m_bitlen;
+    uint32_t m_state[8]; // A, B, C, D, E, F, G, H
+
+    __device__ __host__ void transform() {
+        uint32_t maj, xorA, ch, xorE, sum, newA, newE, m[64];
+        uint32_t state[8];
+
+        for (uint8_t i = 0, j = 0; i < 16; i++, j += 4) {
+            m[i] = (m_data[j] << 24) | (m_data[j + 1] << 16) | (m_data[j + 2] << 8) | m_data[j + 3];
+        }
+
+        for (uint8_t k = 16; k < 64; k++) {
+            m[k] = sig1(m[k - 2]) + m[k - 7] + sig0(m[k - 15]) + m[k - 16];
+        }
+
+        for(uint8_t i = 0 ; i < 8 ; i++) {
+            state[i] = m_state[i];
+        }
+
+        for (uint8_t i = 0; i < 64; i++) {
+            maj = majority(state[0], state[1], state[2]);
+            xorA = rotr(state[0], 2) ^ rotr(state[0], 13) ^ rotr(state[0], 22);
+            ch = choose(state[4], state[5], state[6]);
+            xorE = rotr(state[4], 6) ^ rotr(state[4], 11) ^ rotr(state[4], 25);
+            sum = m[i] + K[i] + state[7] + ch + xorE;
+            newA = xorA + maj + sum;
+            newE = state[3] + sum;
+
+            state[7] = state[6];
+            state[6] = state[5];
+            state[5] = state[4];
+            state[4] = newE;
+            state[3] = state[2];
+            state[2] = state[1];
+            state[1] = state[0];
+            state[0] = newA;
+        }
+
+        for(uint8_t i = 0 ; i < 8 ; i++) {
+            m_state[i] += state[i];
+        }
+    }
+
+    __device__ __host__ void pad() {
+        uint64_t i = m_blocklen;
+        uint8_t end = m_blocklen < 56 ? 56 : 64;
+
+        m_data[i++] = 0x80; // Append 1 bit followed by zeros
+        while (i < end) {
+            m_data[i++] = 0x00;
+        }
+
+        if(m_blocklen >= 56) {
+            transform();
+            memset(m_data, 0, 56);
+        }
+
+        m_bitlen += m_blocklen * 8;
+        m_data[63] = m_bitlen;
+        m_data[62] = m_bitlen >> 8;
+        m_data[61] = m_bitlen >> 16;
+        m_data[60] = m_bitlen >> 24;
+        m_data[59] = m_bitlen >> 32;
+        m_data[58] = m_bitlen >> 40;
+        m_data[57] = m_bitlen >> 48;
+        m_data[56] = m_bitlen >> 56;
+        transform();
+    }
+
+    __device__ __host__ void revert(uint8_t* hash) {
+        for (uint8_t i = 0; i < 4; i++) {
+            for(uint8_t j = 0; j < 8; j++) {
+                hash[i + (j * 4)] = (m_state[j] >> (24 - i * 8)) & 0x000000ff;
+            }
+        }
+    }
+};
 
 // Convert a hex string to a byte array
 __host__ void hex_to_bytes(const char* hex, uint8_t* bytes) {
@@ -95,8 +206,8 @@ __device__ __host__ bool compare_hashes(const uint8_t* hash1, const uint8_t* has
     return true;
 }
 
-// Generate passwords and hash them
-__global__ void brute_force_kernel(const char* salt, const uint8_t* target_hash, char* result, int total_ids) {
+// Generate passwords and store the password + salt combination
+__global__ void brute_force_kernel(const char* salt, const uint8_t* target_hash, char* result, char* output, int total_ids) {
     unsigned long long id = blockIdx.x * blockDim.x + threadIdx.x;
     if (id >= total_ids) return;
 
@@ -114,6 +225,10 @@ __global__ void brute_force_kernel(const char* salt, const uint8_t* target_hash,
     // Combine password with salt (use cuda_strcpy and cuda_strcat)
     cuda_strcpy(combined, password);
     cuda_strcat(combined, salt);
+
+    // Store generated password and salt combination for printing
+    int offset = id * (password_length + 16 + 1);
+    cuda_strcpy(output + offset, combined);
 
     // Hash the combined password+salt
     SHA256 sha;
@@ -146,14 +261,27 @@ int main() {
     cudaMalloc(&d_target_hash, 32 * sizeof(uint8_t));
     cudaMemcpy(d_target_hash, predefined_hash, 32 * sizeof(uint8_t), cudaMemcpyHostToDevice);
 
+    // Allocate memory to store all generated password+salt combinations
+    char* d_output;
+    char* h_output = new char[total_passwords * (password_length + 16 + 1)];
+    cudaMalloc(&d_output, total_passwords * (password_length + 16 + 1));
+
     // Launch the brute-force kernel
     int threads_per_block = 256;
     int blocks_per_grid = (total_passwords + threads_per_block - 1) / threads_per_block;
-    brute_force_kernel<<<blocks_per_grid, threads_per_block>>>(salt, d_target_hash, d_result, total_passwords);
+    brute_force_kernel<<<blocks_per_grid, threads_per_block>>>(salt, d_target_hash, d_result, d_output, total_passwords);
 
     // Copy the result back to the host
     char result[password_length + 1] = {0};
     cudaMemcpy(result, d_result, (password_length + 1) * sizeof(char), cudaMemcpyDeviceToHost);
+
+    // Copy the generated password+salt combinations back to the host for printing
+    cudaMemcpy(h_output, d_output, total_passwords * (password_length + 16 + 1), cudaMemcpyDeviceToHost);
+
+    // Print all generated combinations
+    for (unsigned long long i = 0; i < total_passwords; ++i) {
+        std::cout << "Generated: " << std::string(h_output + i * (password_length + 16 + 1)) << std::endl;
+    }
 
     // Check if the result is non-empty
     if (strlen(result) > 0) {
@@ -163,7 +291,9 @@ int main() {
     }
 
     // Free memory
+    delete[] h_output;
     cudaFree(d_result);
+    cudaFree(d_output);
     cudaFree(d_target_hash);
 
     return 0;
