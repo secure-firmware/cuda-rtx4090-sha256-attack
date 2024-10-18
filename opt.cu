@@ -55,7 +55,7 @@ __device__ size_t cuda_strlen(const char* str) {
     return len;
 }
 
-// SHA256 utility functions (same as before)
+// SHA256 utility functions
 __device__ __host__ static uint32_t rotr(uint32_t x, uint32_t n) {
     return (x >> n) | (x << (32 - n));
 }
@@ -206,8 +206,8 @@ __device__ __host__ bool compare_hashes(const uint8_t* hash1, const uint8_t* has
     return true;
 }
 
-// Generate passwords and store the password + salt combination
-__global__ void brute_force_kernel(const char* salt, const uint8_t* target_hash, char* result, char* output, int total_ids) {
+// Generate passwords and print them directly
+__global__ void brute_force_kernel(const char* salt, const uint8_t* target_hash, char* result, int total_ids) {
     unsigned long long id = blockIdx.x * blockDim.x + threadIdx.x;
     if (id >= total_ids) return;
 
@@ -222,13 +222,12 @@ __global__ void brute_force_kernel(const char* salt, const uint8_t* target_hash,
     }
     password[password_length] = '\0';
 
-    // Combine password with salt (use cuda_strcpy and cuda_strcat)
+    // Combine password with salt
     cuda_strcpy(combined, password);
     cuda_strcat(combined, salt);
 
-    // Store generated password and salt combination for printing
-    int offset = id * (password_length + 16 + 1);
-    cuda_strcpy(output + offset, combined);
+    // Print each generated combination
+    printf("Generated: %s\n", combined);
 
     // Hash the combined password+salt
     SHA256 sha;
@@ -261,27 +260,14 @@ int main() {
     cudaMalloc(&d_target_hash, 32 * sizeof(uint8_t));
     cudaMemcpy(d_target_hash, predefined_hash, 32 * sizeof(uint8_t), cudaMemcpyHostToDevice);
 
-    // Allocate memory to store all generated password+salt combinations
-    char* d_output;
-    char* h_output = new char[total_passwords * (password_length + 16 + 1)];
-    cudaMalloc(&d_output, total_passwords * (password_length + 16 + 1));
-
     // Launch the brute-force kernel
     int threads_per_block = 256;
     int blocks_per_grid = (total_passwords + threads_per_block - 1) / threads_per_block;
-    brute_force_kernel<<<blocks_per_grid, threads_per_block>>>(salt, d_target_hash, d_result, d_output, total_passwords);
+    brute_force_kernel<<<blocks_per_grid, threads_per_block>>>(salt, d_target_hash, d_result, total_passwords);
 
     // Copy the result back to the host
     char result[password_length + 1] = {0};
     cudaMemcpy(result, d_result, (password_length + 1) * sizeof(char), cudaMemcpyDeviceToHost);
-
-    // Copy the generated password+salt combinations back to the host for printing
-    cudaMemcpy(h_output, d_output, total_passwords * (password_length + 16 + 1), cudaMemcpyDeviceToHost);
-
-    // Print all generated combinations
-    for (unsigned long long i = 0; i < total_passwords; ++i) {
-        std::cout << "Generated: " << std::string(h_output + i * (password_length + 16 + 1)) << std::endl;
-    }
 
     // Check if the result is non-empty
     if (strlen(result) > 0) {
@@ -291,9 +277,7 @@ int main() {
     }
 
     // Free memory
-    delete[] h_output;
     cudaFree(d_result);
-    cudaFree(d_output);
     cudaFree(d_target_hash);
 
     return 0;
