@@ -8,6 +8,7 @@ const int password_length = 3;
 
 __device__ void generate_password_from_id(unsigned long long id, char *password) {
     for (int i = password_length - 1; i >= 0; --i) {
+        // Access the charset from constant memory
         password[i] = charset[id % base];
         id /= base;
     }
