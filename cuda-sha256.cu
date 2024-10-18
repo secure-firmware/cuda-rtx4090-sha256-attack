@@ -1,8 +1,9 @@
 #include <iostream>
 #include <cuda_runtime.h>
 
-const char charset[] = "abcd";
-const int base = sizeof(charset) - 1;  // base = 4 for characters 'a', 'b', 'c', 'd'
+// Define charset as a constant array in GPU memory
+__constant__ char charset[] = "abcd";
+const int base = 4;  // Adjust to match the charset length
 const int password_length = 3;
 
 __device__ void generate_password_from_id(unsigned long long id, char *password) {
@@ -34,7 +35,7 @@ int main() {
     char *d_output;
     cudaMalloc(&d_output, total_passwords * (password_length + 1) * sizeof(char));
 
-    int num_threads = 16;  // Number of threads per block
+    int num_threads = 16;  // Adjusted for demonstration
     int num_blocks = (total_passwords + num_threads - 1) / num_threads;  // Ensure we cover all IDs
 
     // Launch the kernel
