@@ -5,7 +5,7 @@
 
 // CUDA intrinsic functions for bitwise operations
 __device__ __forceinline__ uint32_t rotr(uint32_t x, uint32_t n) {
-    return __funnelshift_r(x, x, n);  // CUDA intrinsic for fast rotation
+    return (x >> n) | (x << (32 - n));
 }
 
 // SHA256 constants
