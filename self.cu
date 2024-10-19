@@ -2,6 +2,9 @@
 #include <sstream>
 #include <cuda_runtime.h>
 
+// Assuming you're launching a certain number of threads and each thread hashes multiple values
+
+
 // Define charset for password generation
 __constant__ char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 const int base = 62; // Charset length (lower + upper + numbers)
@@ -10,7 +13,7 @@ const int salt_length = 16;
 const char salt[] = "671ddddb8aa8eec9"; // The example salt
 
 // Predefined hash we're trying to match
-const char predefined_hash_hex[] = "922482f6e20e95a35a3d150860bb1f03003c4f264e1dc7377e91b10eac5f8f10";
+const char predefined_hash_hex[] = "ef4a35ce41f06ae7b963fdfc294fe703ef48624cd8d199bc8a21554500677558";
 
 // SHA256 constants
 __constant__ static const uint32_t K[64] = {
@@ -299,6 +302,16 @@ __global__ void brute_force_kernel(const char *salt, const uint8_t *target_hash,
 
 int main()
 {
+    // Start timer
+    cudaEvent_t start, stop;
+    float milliseconds = 0;
+
+
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    // Record the start event
+    cudaEventRecord(start);
 
     uint8_t temp_hash[32];
     uint8_t *d_temp_hash;
@@ -348,7 +361,28 @@ int main()
     hash_to_string(temp_hash, temp_hex);
 
     std::cout << "Target Hash: " << predefined_hash_hex << std::endl;
-    std::cout << "Temp hex: " << temp_hex << std::endl;
+    std::cout << "Calculated Hash: " << temp_hex << std::endl;
+
+    // Calculate elapsed time
+    cudaEventElapsedTime(&milliseconds, start, stop);
+
+    // Convert milliseconds to seconds
+    float seconds = milliseconds / 1000.0f;
+
+    // Safety check to avoid division by zero
+    if (seconds > 0) {
+        // Calculate hashes per second (H/s)
+        double hashes_per_second = total_passwords / seconds;
+
+        std::cout << "Total time: " << seconds << " seconds" << std::endl;
+        std::cout << "Hash rate: " << hashes_per_second << " H/s" << std::endl;
+    } else {
+        std::cout << "Execution time is too short to measure accurately." << std::endl;
+    }
+
+    // Cleanup
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
 
     cudaFree(d_temp_hash);
     cudaFree(d_salt);
