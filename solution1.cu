@@ -20,7 +20,7 @@ void hex_to_bytes(const std::string &hex, unsigned char *bytes) {
 }
 
 // Function to generate a password based on an index
-__device__ void generate_password(int idx, char *password, int length) {
+__device__ void generate_password(long long idx, char *password, int length) {
     for (int i = 0; i < length; ++i) {
         password[i] = charset[idx % charset_size];
         idx /= charset_size;
@@ -87,9 +87,9 @@ __device__ void sha256(const unsigned char* input, size_t len, unsigned char* ha
 
 
 
-__global__ void sha256_crack(int start_idx, int end_idx, int password_length, 
+__global__ void sha256_crack(long long start_idx, long long end_idx, int password_length, 
                             const unsigned char *salt, const unsigned char *target_hash, int* password_found) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x + start_idx;
+    long long idx = blockIdx.x * blockDim.x + threadIdx.x + start_idx;
 
     if (idx < end_idx) {
         char* password = new char[password_length + 1];
@@ -108,7 +108,11 @@ __global__ void sha256_crack(int start_idx, int end_idx, int password_length,
             // Password found! Handle the result
             if (atomicCAS(password_found, 0, 1) == 0) {
                 // Atomically set the flag to indicate a password has been found
-                printf("Password found: %s\n", password);
+                printf("Password found: %s\nSalt: ", password);
+                for (int i = 0; i < 16; i++) {
+                    printf("%02X", salt[i]);
+                }
+                printf("\n");
             }
         }
 
@@ -129,8 +133,11 @@ int main(int argc, char* argv[]) {
 
     std::string line;
     if (std::getline(infile, line)) {
-        std::string salt_hex = line.substr(0, 24); // First 24 characters for salt (12 bytes)
-        std::string target_hash_hex = line.substr(24, 64); // Next 64 characters for target hash (32 bytes)
+        std::string salt_hex = line.substr(0, 16); // First 24 characters for salt (12 bytes)
+        std::string target_hash_hex = line.substr(17, 65); // Next 64 characters for target hash (32 bytes)
+
+        printf("Salt: %s\n", salt_hex.c_str());
+        printf("Target Hash: %s\n", target_hash_hex.c_str());
 
         unsigned char salt[16];
         unsigned char target_hash[SHA256_DIGEST_LENGTH];
@@ -149,7 +156,7 @@ int main(int argc, char* argv[]) {
         int password_found = 0;
 
         for (long long start_idx = 0; start_idx < total_passwords; start_idx += batch_size) {
-            int end_idx = std::min(start_idx + batch_size, total_passwords);
+            long long end_idx = std::min(start_idx + batch_size, total_passwords);
 
             int num_blocks = (end_idx - start_idx + threads_per_block - 1) / threads_per_block;
             sha256_crack<<<num_blocks, threads_per_block>>>(start_idx, end_idx, password_length, salt, target_hash, &password_found);
