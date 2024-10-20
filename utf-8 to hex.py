@@ -1,5 +1,5 @@
 # Convert the string to UTF-8 bytes
-string_value = "aaaaaa"
+string_value = "rFXBgV"
 utf8_bytes = string_value.encode('utf-8')
 
 # Convert bytes to hex

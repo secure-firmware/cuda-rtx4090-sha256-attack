@@ -228,13 +228,42 @@ __device__ bool custom_strcmp(const char* a, const char* b) {
     return true;
 }
 
+// Custom device-compatible string copy function
+__device__ void cuda_strcpy(char* dest, const char* src) {
+    while (*src) {
+        *dest++ = *src++;
+    }
+    *dest = '\0';  // Null terminate
+}
 
-__global__ void find_password(long long start, long long end, const char* target_password, bool* found, long long* result_index, unsigned char* hash_output) {
+// Custom device-compatible string concatenate function
+__device__ void cuda_strcat(char* dest, const char* src) {
+    while (*dest) dest++;  // Move pointer to the end of dest
+    while (*src) {
+        *dest++ = *src++;
+    }
+    *dest = '\0';  // Null terminate
+}
+
+// Custom device-compatible string length function
+__device__ size_t cuda_strlen(const char* str) {
+    size_t len = 0;
+    while (*str++) len++;
+    return len;
+}
+
+
+__global__ void find_password(long long start, long long end, const char* target_password, const char* salt, bool* found, long long* result_index, unsigned char* hash_output) {
     long long idx = blockIdx.x * blockDim.x + threadIdx.x + start;
 
     if (idx < end) {
         char password[password_length + 1];
+        char combined[password_length + 16 + 1];
         generate_password(idx, password);
+
+        // Combine password with salt
+        cuda_strcpy(combined, salt);
+        cuda_strcat(combined, password);
 
         if (custom_strcmp(password, target_password)) {
             *found = true;
@@ -243,8 +272,9 @@ __global__ void find_password(long long start, long long end, const char* target
             // Compute SHA-256 hash of the found password
             unsigned char hash[32]; // SHA-256 produces a 32-byte hash
             SHA256 sha;
-            uint8_t *password_data = reinterpret_cast<uint8_t*>(const_cast<char*>(password));
-            sha.update(password_data, password_length);
+
+            uint8_t *hash_data = reinterpret_cast<uint8_t*>(const_cast<char*>(combined));
+            sha.update(hash_data, sizeof(combined) - 1);
             sha.digest(hash);  // No dynamic allocation, pass pre-allocated array
 
             // Copy the hash to the output
@@ -256,23 +286,27 @@ __global__ void find_password(long long start, long long end, const char* target
 }
 
 int main() {
-    const char* target_password = "rFXBgV";
+    const char* target_password = "4oNRTA";
+    const char* salt = "981127cd577e73d3";
     long long total_passwords = 62LL * 62 * 62 * 62 * 62 * 62; // 62^6
     long long blockSize = 256; // Number of threads per block
     long long passwords_per_batch = 1000000; // Number of passwords to process in one batch
     long long num_batches = (total_passwords + passwords_per_batch - 1) / passwords_per_batch;
 
     char* d_target_password;
+    char* d_salt;
     bool* d_found;
     long long* d_result_index;
     unsigned char* d_hash_output;
 
     cudaMalloc(&d_target_password, (password_length + 1) * sizeof(char));
+    cudaMalloc(&d_salt, 16 * sizeof(char));
     cudaMalloc(&d_found, sizeof(bool));
     cudaMalloc(&d_result_index, sizeof(long long));
     cudaMalloc(&d_hash_output, 32 * sizeof(unsigned char)); // Allocate space for SHA-256 hash
 
     cudaMemcpy(d_target_password, target_password, (password_length + 1) * sizeof(char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_salt, salt, 16 * sizeof(char), cudaMemcpyHostToDevice);
     cudaMemset(d_found, false, sizeof(bool));
 
     for (long long batch = 0; batch < num_batches; ++batch) {
@@ -283,7 +317,7 @@ int main() {
         long long numBlocks = (end - start + blockSize - 1) / blockSize;
 
         // Launch kernel for the current batch
-        find_password<<<numBlocks, blockSize>>>(start, end, d_target_password, d_found, d_result_index, d_hash_output);
+        find_password<<<numBlocks, blockSize>>>(start, end, d_target_password, d_salt, d_found, d_result_index, d_hash_output);
 
         // Copy results back to host
         bool found;
