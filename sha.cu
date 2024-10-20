@@ -1,18 +1,9 @@
 #include <iostream>
+#include <cstdio>
 #include <cuda_runtime.h>
 
-// Define charset for password generation
-__constant__ char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-const int base = 62;  // Charset length (lower + upper + numbers)
-const int password_length = 6;
-const int salt_length = 16;
-const char salt[] = "671ddddb8aa8eec9";  // The example salt
-
-// Predefined hash we're trying to match
-const char predefined_hash_hex[] = "e5d339e275ad5badd55a8dda1ff3ed7c6b2bcbd55a16327c3d7abcb5a8f87744";
-
-// SHA256 constants
-__constant__ static const uint32_t K[64] = {
+// Define constants
+__device__ __constant__ unsigned int k[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
     0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
@@ -31,271 +22,136 @@ __constant__ static const uint32_t K[64] = {
     0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 };
 
-// Custom device-compatible string copy function
-__device__ void cuda_strcpy(char* dest, const char* src) {
-    while (*src) {
-        *dest++ = *src++;
-    }
-    *dest = '\0';  // Null terminate
+// Bitwise operation functions
+__device__ unsigned int rotate_right(unsigned int value, unsigned int amount) {
+    return (value >> amount) | (value << (32 - amount));
 }
 
-// Custom device-compatible string concatenate function
-__device__ void cuda_strcat(char* dest, const char* src) {
-    while (*dest) dest++;  // Move pointer to the end of dest
-    while (*src) {
-        *dest++ = *src++;
-    }
-    *dest = '\0';  // Null terminate
+__device__ unsigned int choice(unsigned int x, unsigned int y, unsigned int z) {
+    return (x & y) ^ (~x & z);
 }
 
-// Custom device-compatible string length function
-__device__ size_t cuda_strlen(const char* str) {
-    size_t len = 0;
-    while (*str++) len++;
-    return len;
+__device__ unsigned int majority(unsigned int x, unsigned int y, unsigned int z) {
+    return (x & y) ^ (x & z) ^ (y & z);
 }
 
-// SHA256 utility functions
-__device__ __host__ static uint32_t rotr(uint32_t x, uint32_t n) {
-    return (x >> n) | (x << (32 - n));
-}
+// CUDA kernel for SHA-256
+__global__ void sha256Kernel(const unsigned char *data, unsigned int *digest, int num_chunks) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
-__device__ __host__ static uint32_t choose(uint32_t e, uint32_t f, uint32_t g) {
-    return (e & f) ^ (~e & g);
-}
+    if (idx < num_chunks) {
+        unsigned int h0 = 0x6a09e667;
+        unsigned int h1 = 0xbb67ae85;
+        unsigned int h2 = 0x3c6ef372;
+        unsigned int h3 = 0xa54ff53a;
+        unsigned int h4 = 0x510e527f;
+        unsigned int h5 = 0x9b05688c;
+        unsigned int h6 = 0x1f83d9ab;
+        unsigned int h7 = 0x5be0cd19;
 
-__device__ __host__ static uint32_t majority(uint32_t a, uint32_t b, uint32_t c) {
-    return (a & (b | c)) | (b & c);
-}
-
-__device__ __host__ static uint32_t sig0(uint32_t x) {
-    return rotr(x, 7) ^ rotr(x, 18) ^ (x >> 3);
-}
-
-__device__ __host__ static uint32_t sig1(uint32_t x) {
-    return rotr(x, 17) ^ rotr(x, 19) ^ (x >> 10);
-}
-
-// SHA256 class definition
-class SHA256 {
-public:
-    __device__ __host__ SHA256() {
-        m_blocklen = 0;
-        m_bitlen = 0;
-        m_state[0] = 0x6a09e667;
-        m_state[1] = 0xbb67ae85;
-        m_state[2] = 0x3c6ef372;
-        m_state[3] = 0xa54ff53a;
-        m_state[4] = 0x510e527f;
-        m_state[5] = 0x9b05688c;
-        m_state[6] = 0x1f83d9ab;
-        m_state[7] = 0x5be0cd19;
-    }
-
-    __device__ __host__ void update(const uint8_t* data, size_t length) {
-        for (size_t i = 0; i < length; i++) {
-            m_data[m_blocklen++] = data[i];
-            if (m_blocklen == 64) {
-                transform();
-                m_bitlen += 512;
-                m_blocklen = 0;
-            }
-        }
-    }
-
-    __device__ __host__ void finalize(uint8_t* hash) {
-        pad();
-        revert(hash);
-    }
-
-private:
-    uint8_t  m_data[64];
-    uint32_t m_blocklen;
-    uint64_t m_bitlen;
-    uint32_t m_state[8]; // A, B, C, D, E, F, G, H
-
-    __device__ __host__ void transform() {
-        uint32_t maj, xorA, ch, xorE, sum, newA, newE, m[64];
-        uint32_t state[8];
-
-        for (uint8_t i = 0, j = 0; i < 16; i++, j += 4) {
-            m[i] = (m_data[j] << 24) | (m_data[j + 1] << 16) | (m_data[j + 2] << 8) | m_data[j + 3];
+        unsigned int w[64];
+        for (int i = 0; i < 16; ++i) {
+                        // Load the data into the message schedule array w
+            w[i] = (data[idx * 64 + i * 4] << 24) |
+                   (data[idx * 64 + i * 4 + 1] << 16) |
+                   (data[idx * 64 + i * 4 + 2] << 8) |
+                   (data[idx * 64 + i * 4 + 3]);
         }
 
-        for (uint8_t k = 16; k < 64; k++) {
-            m[k] = sig1(m[k - 2]) + m[k - 7] + sig0(m[k - 15]) + m[k - 16];
+        for (int i = 16; i < 64; ++i) {
+            unsigned int s0 = rotate_right(w[i - 15], 7) ^ rotate_right(w[i - 15], 18) ^ (w[i - 15] >> 3);
+            unsigned int s1 = rotate_right(w[i - 2], 17) ^ rotate_right(w[i - 2], 19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16] + s0 + w[i - 7] + s1;
         }
 
-        for(uint8_t i = 0 ; i < 8 ; i++) {
-            state[i] = m_state[i];
+        unsigned int a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, g = h6, h = h7;
+
+        for (int i = 0; i < 64; ++i) {
+            unsigned int S1 = rotate_right(e, 6) ^ rotate_right(e, 11) ^ rotate_right(e, 25);
+            unsigned int ch = choice(e, f, g);
+            unsigned int temp1 = h + S1 + ch + k[i] + w[i];
+            unsigned int S0 = rotate_right(a, 2) ^ rotate_right(a, 13) ^ rotate_right(a, 22);
+            unsigned int maj = majority(a, b, c);
+            unsigned int temp2 = S0 + maj;
+
+            h = g;
+            g = f;
+            f = e;
+            e = d + temp1;
+            d = c;
+            c = b;
+            b = a;
+            a = temp1 + temp2;
         }
 
-        for (uint8_t i = 0; i < 64; i++) {
-            maj = majority(state[0], state[1], state[2]);
-            xorA = rotr(state[0], 2) ^ rotr(state[0], 13) ^ rotr(state[0], 22);
-            ch = choose(state[4], state[5], state[6]);
-            xorE = rotr(state[4], 6) ^ rotr(state[4], 11) ^ rotr(state[4], 25);
-            sum = m[i] + K[i] + state[7] + ch + xorE;
-            newA = xorA + maj + sum;
-            newE = state[3] + sum;
-
-            state[7] = state[6];
-            state[6] = state[5];
-            state[5] = state[4];
-            state[4] = newE;
-            state[3] = state[2];
-            state[2] = state[1];
-            state[1] = state[0];
-            state[0] = newA;
-        }
-
-        for(uint8_t i = 0 ; i < 8 ; i++) {
-            m_state[i] += state[i];
-        }
-    }
-
-    __device__ __host__ void pad() {
-        uint64_t i = m_blocklen;
-        uint8_t end = m_blocklen < 56 ? 56 : 64;
-
-        m_data[i++] = 0x80; // Append 1 bit followed by zeros
-        while (i < end) {
-            m_data[i++] = 0x00;
-        }
-
-        if(m_blocklen >= 56) {
-            transform();
-            memset(m_data, 0, 56);
-        }
-
-        m_bitlen += m_blocklen * 8;
-        m_data[63] = m_bitlen;
-        m_data[62] = m_bitlen >> 8;
-        m_data[61] = m_bitlen >> 16;
-        m_data[60] = m_bitlen >> 24;
-        m_data[59] = m_bitlen >> 32;
-        m_data[58] = m_bitlen >> 40;
-        m_data[57] = m_bitlen >> 48;
-        m_data[56] = m_bitlen >> 56;
-        transform();
-    }
-
-    __device__ __host__ void revert(uint8_t* hash) {
-        for (uint8_t i = 0; i < 4; i++) {
-            for(uint8_t j = 0; j < 8; j++) {
-                hash[i + (j * 4)] = (m_state[j] >> (24 - i * 8)) & 0x000000ff;
-            }
-        }
-    }
-};
-
-// Convert a hex string to a byte array
-__host__ void hex_to_bytes(const char* hex, uint8_t* bytes) {
-    for (int i = 0; i < 32; i++) {
-        sscanf(hex + 2 * i, "%2hhx", &bytes[i]);
+        digest[idx * 8 + 0] = h0 + a;
+        digest[idx * 8 + 1] = h1 + b;
+        digest[idx * 8 + 2] = h2 + c;
+        digest[idx * 8 + 3] = h3 + d;
+        digest[idx * 8 + 4] = h4 + e;
+        digest[idx * 8 + 5] = h5 + f;
+        digest[idx * 8 + 6] = h6 + g;
+        digest[idx * 8 + 7] = h7 + h;
     }
 }
 
-__host__ void bytes_to_hex(const uint8_t* bytes, char* hex) {
-    for (int i = 0; i < 32; i++) {
-        sprintf(hex + 2 * i, "%02x", bytes[i]);
-        hex[2 * i + 1] = '\0';
+int main() {
+    const int num_blocks = 1;
+    const int num_threads = 1; // Matching the number of chunks for simplicity
+
+    const int input_size = 64; // 64 bytes of data (one SHA-256 block)
+    unsigned char h_input[input_size] = {
+        0x61, 0x62, 0x63, // "abc" example input, padded to 64 bytes
+        0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Padding with one '1' bit and zeros
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,       // More padding
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
+        0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
+        // Length of original message is 3 bytes (24 bits)
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
+        0, 0, 0, 0, 24
+    };
+
+    unsigned int h_output[8]; // Output digest
+
+    unsigned char *d_input;
+    unsigned int *d_output;
+
+    // Allocate device memory
+    cudaMalloc(&d_input, input_size * sizeof(unsigned char));
+    cudaMalloc(&d_output, 8 * sizeof(unsigned int));
+
+    // Copy input data from host to device
+    cudaMemcpy(d_input, h_input, input_size * sizeof(unsigned char), cudaMemcpyHostToDevice);
+
+    // Execute the SHA-256 kernel
+    sha256Kernel<<<num_blocks, num_threads>>>(d_input, d_output, num_blocks * num_threads);
+
+    // Copy the output data back to the host
+    cudaMemcpy(h_output, d_output, 8 * sizeof(unsigned int), cudaMemcpyDeviceToHost);
+
+    // Print the result
+    for (int i = 0; i < 8; ++i) {
+        printf("%08x", h_output[i]);
     }
-}
+    printf("\n");
 
+    // Free device memory
+    cudaFree(d_input);
+    cudaFree(d_output);
 
-// Check if two byte arrays are equal
-__device__ __host__ bool compare_hashes(const uint8_t* hash1, const uint8_t* hash2) {
-    for (int i = 0; i < 32; i++) {
-        if (hash1[i] != hash2[i]) {
-            return false;
-        }
-    }
-    return true;
-}
-
-__global__ void brute_force_kernel(const char* salt, const uint8_t* target_hash, char* result, unsigned long long total_ids, uint8_t* temp_hash) {
-    unsigned long long id = blockIdx.x * blockDim.x + threadIdx.x;
-    if (id > total_ids) return;
-
-    char password[password_length + 1];
-    char combined[password_length + salt_length + 1];
-    uint8_t hash[32];
-
-    for (size_t i = 0; i < password_length; i++)
-    {
-        password[i] = charset[id % base];
-        id /= base;
-    }
-    password[password_length] = '\0';
-    cuda_strcpy(combined, password);
-    cuda_strcat(combined, salt);
-
-    cuda_strcpy(password, combined);
-
-    // Hash the combined password+salt
-    SHA256 sha;
-    sha.update((uint8_t*)combined, cuda_strlen(combined));
-    sha.finalize(hash);
-
-    cuda_strcpy(result, "Not Found");
-    // Compare the hash to the target hash
-    if (compare_hashes(hash, target_hash)) {
-        cuda_strcpy(result, "Found");  // If found, store the password in the result
-    }
-
-    for(size_t i = 0; i < 32; i++){
-        temp_hash[i] = hash[i];
-    }
-}
-
-
-int main()
-{
-
-    uint8_t temp_hash[32];
-    uint8_t* d_temp_hash;
-    char temp_hex[65];
-    cudaMalloc(&d_temp_hash, sizeof(temp_hash));
-
-    uint8_t target_hash[32];
-    hex_to_bytes(predefined_hash_hex, target_hash);
-
-    // Define the number of possible passwords (62^6)
-    unsigned long long total_passwords = 1;
-    for (int i = 0; i < password_length; i++) {
-        total_passwords *= base;
-    }
-
-    // Allocate memory for the password and combined string
-    char* d_salt;
-    cudaMalloc(&d_salt, salt_length + 1);
-    cudaMemcpy(d_salt, salt, salt_length + 1, cudaMemcpyHostToDevice);
-
-    char* d_result;
-    cudaMalloc(&d_result, password_length + salt_length + 1);
-
-    uint8_t* d_target_hash;
-    cudaMalloc(&d_target_hash, sizeof(target_hash));
-    cudaMemcpy(d_target_hash, target_hash, sizeof(target_hash), cudaMemcpyHostToDevice);
-
-    brute_force_kernel<<<1, 1>>>(d_salt, d_target_hash, d_result, total_passwords, d_temp_hash);
-    cudaDeviceSynchronize();
-
-    char result[password_length + salt_length + 1];
-    cudaMemcpy(result, d_result, password_length + salt_length + 1, cudaMemcpyDeviceToHost);
-    std::cout << "Result: " << result << std::endl;
-    cudaMemcpy(temp_hash, d_temp_hash, sizeof(temp_hash), cudaMemcpyDeviceToHost);
-    hex_to_bytes(predefined_hash_hex, temp_hash);
-    bytes_to_hex(temp_hash, temp_hex);
-    std::cout << "Temp Hex: " << temp_hex << std::endl;
-    std::cout << "Target Hash: " << predefined_hash_hex << std::endl;
-    std::cout << "Temp hash: " << temp_hash << std::endl;
-
-
-    cudaFree(d_temp_hash);
-    cudaFree(d_salt);
-    cudaFree(d_result);
-    cudaFree(d_target_hash);
     return 0;
 }
+
