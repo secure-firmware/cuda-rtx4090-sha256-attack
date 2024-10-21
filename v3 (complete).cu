@@ -338,7 +338,7 @@ std::string bytesToHex(const uint8_t *byteArray, size_t length)
 }
 
 
-__global__ void find_password_optimized(long long start, long long end, int *found, long long *result_index) {
+__global__ __launch_bounds__(256, 8) void find_password_optimized(long long start, long long end, int *found, long long *result_index) {
     
     __shared__ char shared_charset[62];
     __shared__ uint8_t shared_target_hash[32];
