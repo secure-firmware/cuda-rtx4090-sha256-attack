@@ -275,6 +275,13 @@ __global__ void find_password(long long start, long long end, const char* target
 }
 
 int main() {
+
+        // Open the input file
+    std::ifstream infile("in.txt");
+    if (!infile) {
+        std::cerr << "Unable to open file in.txt";
+        return 1;
+    }
     const char* target_password = "qTUza6";
     const char* target_salt = "49c1d1eb24e4be12";
     const char* target_hash = "3024912a2a6e94fb5a99628e7dd148a1579905ea1d1cb2bef88424b5943bd03b";
