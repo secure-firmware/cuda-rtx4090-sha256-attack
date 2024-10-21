@@ -413,7 +413,7 @@ int main()
 
 
             long long total_passwords = 62LL * 62 * 62 * 62 * 62 * 62; // 62^6 with explicit long long
-            long long blockSize = 256;                                 // Number of threads per block
+            long long blockSize = 128;                                 // Number of threads per block
             long long passwords_per_batch = 1000000;                   // Number of passwords to process in one batch
             long long num_batches = (total_passwords + passwords_per_batch - 1) / passwords_per_batch;
 
