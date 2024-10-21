@@ -335,45 +335,18 @@ std::string bytesToHex(const uint8_t *byteArray, size_t length)
 }
 
 
-__global__ void find_password(long long start, long long end, int *found, long long *result_index, const char *target_salt, const uint8_t *target_hash)
-{
-    long long idx = blockIdx.x * blockDim.x + threadIdx.x + start;
-    uint8_t sha256_uint8[32];
-
-    if (idx < end)
-    {
-        char password[password_length + 1];
-        char combined_salt[salt_length + password_length + 1];
-        generate_password(idx, password);
-
-        cuda_strcpy(combined_salt, target_salt, salt_length + 1);
-        cuda_strcat(combined_salt, password);
-
-        // Create an instance of SHA256
-        SHA256 sha256;
-
-        // Hash the password
-        sha256.update((const uint8_t *)combined_salt, cuda_strlen(combined_salt));
-
-        // Get the resulting hash
-        sha256.digest(sha256_uint8);
-
-        if (compareUint8Arrays(target_hash, sha256_uint8, 32))
-        {
-            if (atomicExch(found, 1) == 0)
-            {
-                // Only the first thread to find the password will update result_index
-                *result_index = idx;
-            }
-        }
-    }
-}
-
 __global__ void find_password_optimized(long long start, long long end, int *found, long long *result_index, const char *target_salt, const uint8_t *target_hash) {
     
     long long idx = blockIdx.x * blockDim.x + threadIdx.x + start;
-    __shared__ uint8_t shared_target_hash[32]; // Use shared memory for target hash
+    __shared__ char shared_charset[62];
+    __shared__ uint8_t shared_target_hash[32];
+    
+    // Load charset into shared memory
+    if (threadIdx.x < 62) {
+        shared_charset[threadIdx.x] = charset[threadIdx.x];
+    }
 
+    // Load target hash into shared memory
     if (threadIdx.x < 32) {
         shared_target_hash[threadIdx.x] = target_hash[threadIdx.x];
     }
@@ -382,7 +355,13 @@ __global__ void find_password_optimized(long long start, long long end, int *fou
     if (idx < end) {
         char password[password_length + 1];
         char combined_salt[salt_length + password_length + 1];
-        generate_password(idx, password);
+        
+        // Use shared_charset instead of global charset
+        for (int i = 0; i < password_length; ++i) {
+            password[i] = shared_charset[idx % charset_size];
+            idx /= charset_size;
+        }
+        password[password_length] = '\0';
 
         cuda_strcpy(combined_salt, target_salt, salt_length + 1);
         cuda_strcat(combined_salt, password);
