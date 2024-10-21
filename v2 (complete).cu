@@ -461,8 +461,8 @@ int main()
                 // Calculate number of blocks needed for this batch
                 long long numBlocks = (end - start + blockSize - 1) / blockSize;
 
-                // Launch kernel for the current batch
-                find_password<<<numBlocks, blockSize>>>(start, end, d_found, d_result_index, d_salt, d_target_hash);
+                // Launch optimized kernel
+                find_password_optimized<<<numBlocks, blockSize>>>(start, end, d_found, d_result_index, d_salt, d_target_hash);
                 cudaError_t err = cudaGetLastError();
                 if (err != cudaSuccess) {
                     std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
