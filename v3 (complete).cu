@@ -388,6 +388,26 @@ __global__ void find_password_optimized(long long start, long long end, int *fou
 
 int main()
 {
+
+    int maxThreadsPerBlock;
+    int maxBlocksPerSM;
+    int numSMs;
+
+    cudaDeviceGetAttribute(&maxThreadsPerBlock, cudaDevAttrMaxThreadsPerBlock, 0);
+    cudaDeviceGetAttribute(&maxBlocksPerSM, cudaDevAttrMaxBlocksPerMultiprocessor, 0);
+    cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, 0);
+
+    const int NUM_BLOCK_SIZES = 4;
+    int blockSizes[NUM_BLOCK_SIZES] = {128, 256, 512, 1024};
+
+    for (int i = 0; i < NUM_BLOCK_SIZES; i++) {
+        int blockSize = blockSizes[i];
+        int numBlocks;
+        cudaOccupancyMaxActiveBlocksPerMultiprocessor(&numBlocks, find_password_optimized, blockSize, 0);
+        float occupancy = (float)(numBlocks * blockSize) / maxThreadsPerBlock;
+        std::cout << "Block size: " << blockSize << ", Occupancy: " << occupancy * 100 << "%" << std::endl;
+    }
+
     // Open the input file
     std::ifstream infile("in.txt");
     if (!infile) {
