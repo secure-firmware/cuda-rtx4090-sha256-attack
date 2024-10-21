@@ -28,6 +28,9 @@ __constant__ static const uint32_t K[64] = {
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
     0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
 
+__constant__ char d_target_salt[16 + 1];
+__constant__ uint8_t d_target_hash[32];
+
 // Host-side equivalent of K for use in host functions
 static const uint32_t K_host[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
@@ -335,7 +338,7 @@ std::string bytesToHex(const uint8_t *byteArray, size_t length)
 }
 
 
-__global__ void find_password_optimized(long long start, long long end, int *found, long long *result_index, const char *target_salt, const uint8_t *target_hash) {
+__global__ void find_password_optimized(long long start, long long end, int *found, long long *result_index) {
     
     __shared__ char shared_charset[62];
     __shared__ uint8_t shared_target_hash[32];
@@ -347,7 +350,7 @@ __global__ void find_password_optimized(long long start, long long end, int *fou
 
     // Load target hash into shared memory
     if (threadIdx.x < 32) {
-        shared_target_hash[threadIdx.x] = target_hash[threadIdx.x];
+        shared_target_hash[threadIdx.x] = d_target_hash[threadIdx.x];
     }
     __syncthreads();
 
@@ -357,7 +360,7 @@ __global__ void find_password_optimized(long long start, long long end, int *fou
     // Generate password directly without intermediate storage
     char combined_salt[salt_length + password_length + 1];
     for (int i = 0; i < salt_length; ++i) {
-        combined_salt[i] = target_salt[i];
+        combined_salt[i] = d_target_salt[i];
     }
     for (int i = 0; i < password_length; ++i) {
         combined_salt[salt_length + i] = shared_charset[idx % charset_size];
@@ -397,8 +400,8 @@ int main()
     cudaDeviceGetAttribute(&maxBlocksPerSM, cudaDevAttrMaxBlocksPerMultiprocessor, 0);
     cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, 0);
 
-    const int NUM_BLOCK_SIZES = 4;
-    int blockSizes[NUM_BLOCK_SIZES] = {128, 256, 512, 1024};
+    const int NUM_BLOCK_SIZES = 5;
+    int blockSizes[NUM_BLOCK_SIZES] = {64, 128, 256, 512, 1024};
 
     for (int i = 0; i < NUM_BLOCK_SIZES; i++) {
         int blockSize = blockSizes[i];
@@ -431,28 +434,23 @@ int main()
             // Convert the target hash from hex string to byte array
             hexToBytes(target_hash_hex, target_hash);
 
+            cudaMemcpyToSymbol(d_target_salt, target_salt, (salt_length + 1) * sizeof(char));
+            cudaMemcpyToSymbol(d_target_hash, target_hash, 32 * sizeof(uint8_t));
+
 
             long long total_passwords = 62LL * 62 * 62 * 62 * 62 * 62; // 62^6 with explicit long long
             long long blockSize = 128;                                 // Number of threads per block
             long long passwords_per_batch = 1000000;                   // Number of passwords to process in one batch
             long long num_batches = (total_passwords + passwords_per_batch - 1) / passwords_per_batch;
 
-            char *d_target_salt;
-            uint8_t *d_target_hash;
-            char *d_salt;
-
             int *d_found;
             int found = 0;
             long long *d_result_index;
 
             cudaMalloc(&d_found, sizeof(int));
-            cudaMalloc(&d_salt, (salt_length + 1) * sizeof(char));
-            cudaMalloc(&d_target_hash, 32 * sizeof(uint8_t));
             cudaMalloc(&d_result_index, sizeof(long long));
 
             cudaMemcpy(d_found, &found, sizeof(int), cudaMemcpyHostToDevice);
-            cudaMemcpy(d_salt, target_salt, (salt_length + 1) * sizeof(char), cudaMemcpyHostToDevice);
-            cudaMemcpy(d_target_hash, target_hash, 32 * sizeof(uint8_t), cudaMemcpyHostToDevice);
 
             // Start timing
             auto start_time = std::chrono::high_resolution_clock::now();
@@ -466,7 +464,7 @@ int main()
                 long long numBlocks = (end - start + blockSize - 1) / blockSize;
 
                 // Launch optimized kernel
-                find_password_optimized<<<numBlocks, blockSize>>>(start, end, d_found, d_result_index, d_salt, d_target_hash);
+                find_password_optimized<<<numBlocks, blockSize>>>(start, end, d_found, d_result_index);
                 cudaError_t err = cudaGetLastError();
                 if (err != cudaSuccess) {
                     std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
