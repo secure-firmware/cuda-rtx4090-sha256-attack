@@ -154,31 +154,35 @@ private:
         uint32_t maj, xorA, ch, xorE, sum, newA, newE, m[64];
         uint32_t state[8];
 
-        // Select K array based on whether we're on the device or host
-#ifdef __CUDA_ARCH__
-        const uint32_t *k_array = K; // For device
-#else
-        const uint32_t *k_array = K_host; // For host
-#endif
+        #ifdef __CUDA_ARCH__
+        const uint32_t *k_array = K;
+        #else
+        const uint32_t *k_array = K_host;
+        #endif
 
-        // Process the message schedule array (W)
+        // Unroll the first loop for processing the message schedule array
+        #pragma unroll 16
         for (uint8_t i = 0, j = 0; i < 16; i++, j += 4)
         {
             m[i] = (m_data[j] << 24) | (m_data[j + 1] << 16) | (m_data[j + 2] << 8) | m_data[j + 3];
         }
 
+        // Unroll the second loop for the message schedule array
+        #pragma unroll 48
         for (uint8_t k = 16; k < 64; k++)
         {
             m[k] = sig1(m[k - 2]) + m[k - 7] + sig0(m[k - 15]) + m[k - 16];
         }
 
         // Initialize state array with the current hash values
+        #pragma unroll 8
         for (uint8_t i = 0; i < 8; i++)
         {
             state[i] = m_state[i];
         }
 
-        // Main compression loop
+        // Main compression loop - fully unroll
+        #pragma unroll 64
         for (uint8_t i = 0; i < 64; i++)
         {
             maj = majority(state[0], state[1], state[2]);
@@ -202,6 +206,7 @@ private:
         }
 
         // Add the compressed chunk to the current hash value
+        #pragma unroll 8
         for (uint8_t i = 0; i < 8; i++)
         {
             m_state[i] += state[i];
