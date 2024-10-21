@@ -3,6 +3,7 @@
 #include <sstream>
 #include <fstream>
 #include <string>
+#include <chrono>
 #include <cuda_runtime.h>
 
 #ifndef SHA256_CUH
@@ -424,6 +425,9 @@ int main()
             cudaMemcpy(d_salt, target_salt, (salt_length + 1) * sizeof(char), cudaMemcpyHostToDevice);
             cudaMemcpy(d_target_hash, target_hash, 32 * sizeof(uint8_t), cudaMemcpyHostToDevice);
 
+            // Start timing
+            auto start_time = std::chrono::high_resolution_clock::now();
+
             for (long long batch = 0; batch < num_batches; ++batch)
             {
                 long long start = batch * passwords_per_batch;
@@ -452,6 +456,15 @@ int main()
                     break; // Exit loop if password is found
                 }
             }
+
+            // End timing
+            auto end_time = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> elapsed_seconds = end_time - start_time;
+
+            // Calculate GH/s
+            double hashes_per_second = total_passwords / elapsed_seconds.count();
+            double gigahashes_per_second = hashes_per_second / 1e9;
+            std::cout << "Performance: " << gigahashes_per_second << " GH/s" << std::endl;
 
             // Free device memory
             cudaFree(d_target_password);
