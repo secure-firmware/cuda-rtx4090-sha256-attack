@@ -378,77 +378,86 @@ int main()
         return 1;
     }
 
-    const char *target_password = "UhIFe8";
-    const char *target_salt = "49c1d1eb24e4be12";
-    const char *target_hash_hex = "bc8015f0bef4822bf3b0d0aa8eb320dbbad21c9a65f7c77aa2d811121f075254";
-    uint8_t target_hash[32];
-    uint8_t result_hash[32];
+    std::string line;
 
-    // Convert the target hash from hex string to byte array
-    hexToBytes(target_hash_hex, target_hash);
-    std::cout << "Target HASH: " << bytesToHex(target_hash, 32) << "\n";
+    while (std::getline(infile, line)) {
+            std::string salt_hex_string = line.substr(0, 16); // First 24 characters for salt (12 bytes)
+            std::string target_hash_string = line.substr(18, 66); // Next 64 characters for target hash (32 bytes)
 
-    long long total_passwords = 62LL * 62 * 62 * 62 * 62 * 62; // 62^6 with explicit long long
-    long long blockSize = 256;                                 // Number of threads per block
-    long long passwords_per_batch = 1000000;                   // Number of passwords to process in one batch
-    long long num_batches = (total_passwords + passwords_per_batch - 1) / passwords_per_batch;
+            printf("Salt: %s\n", salt_hex_string.c_str());
+            printf("Target Hash: %s\n", target_hash_string.c_str());
 
-    char *d_target_password;
-    char *d_target_salt;
-    uint8_t *d_target_hash;
-    char *d_salt;
-    uint8_t *d_result_hash;
+            const char *target_password = "UhIFe8";
+            const char *target_salt = salt_hex_string.c_str();
+            const char *target_hash_hex = target_hash_string.c_str();
+            uint8_t target_hash[32];
+            uint8_t result_hash[32];
 
-    int *d_found;
-    int found = 0;
-    long long *d_result_index;
+            // Convert the target hash from hex string to byte array
+            hexToBytes(target_hash_hex, target_hash);
 
-    cudaMalloc(&d_target_password, (password_length + 1) * sizeof(char));
-    cudaMalloc(&d_found, sizeof(int));
-    cudaMalloc(&d_salt, (salt_length + 1) * sizeof(char));
-    cudaMalloc(&d_target_hash, 32 * sizeof(uint8_t));
-    cudaMalloc(&d_result_index, sizeof(long long));
-    cudaMalloc(&d_result_hash, 32 * sizeof(uint8_t));
 
-    cudaMemcpy(d_target_password, target_password, (password_length + 1) * sizeof(char), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_found, &found, sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_salt, target_salt, (salt_length + 1) * sizeof(char), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_target_hash, target_hash, 32 * sizeof(uint8_t), cudaMemcpyHostToDevice);
+            long long total_passwords = 62LL * 62 * 62 * 62 * 62 * 62; // 62^6 with explicit long long
+            long long blockSize = 256;                                 // Number of threads per block
+            long long passwords_per_batch = 1000000;                   // Number of passwords to process in one batch
+            long long num_batches = (total_passwords + passwords_per_batch - 1) / passwords_per_batch;
 
-    for (long long batch = 0; batch < num_batches; ++batch)
-    {
-        long long start = batch * passwords_per_batch;
-        long long end = min(start + passwords_per_batch, total_passwords);
+            char *d_target_password;
+            char *d_target_salt;
+            uint8_t *d_target_hash;
+            char *d_salt;
+            uint8_t *d_result_hash;
 
-        // Calculate number of blocks needed for this batch
-        long long numBlocks = (end - start + blockSize - 1) / blockSize;
+            int *d_found;
+            int found = 0;
+            long long *d_result_index;
 
-        // Launch kernel for the current batch
-        find_password<<<numBlocks, blockSize>>>(start, end, d_target_password, d_found, d_result_index, d_salt, d_target_hash, d_result_hash);
-        cudaError_t err = cudaGetLastError();
-        if (err != cudaSuccess) {
-            std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
-        }
-        cudaDeviceSynchronize();
+            cudaMalloc(&d_target_password, (password_length + 1) * sizeof(char));
+            cudaMalloc(&d_found, sizeof(int));
+            cudaMalloc(&d_salt, (salt_length + 1) * sizeof(char));
+            cudaMalloc(&d_target_hash, 32 * sizeof(uint8_t));
+            cudaMalloc(&d_result_index, sizeof(long long));
+            cudaMalloc(&d_result_hash, 32 * sizeof(uint8_t));
 
-        // Copy results back to host
-        long long result_index;
-        cudaMemcpy(&found, d_found, sizeof(int), cudaMemcpyDeviceToHost);
-        cudaMemcpy(&result_index, d_result_index, sizeof(long long), cudaMemcpyDeviceToHost);
-        cudaMemcpy(result_hash, d_result_hash, 32 * sizeof(uint8_t), cudaMemcpyDeviceToHost);
+            cudaMemcpy(d_target_password, target_password, (password_length + 1) * sizeof(char), cudaMemcpyHostToDevice);
+            cudaMemcpy(d_found, &found, sizeof(int), cudaMemcpyHostToDevice);
+            cudaMemcpy(d_salt, target_salt, (salt_length + 1) * sizeof(char), cudaMemcpyHostToDevice);
+            cudaMemcpy(d_target_hash, target_hash, 32 * sizeof(uint8_t), cudaMemcpyHostToDevice);
 
-        if (found == 1)
-        {
-            std::cout << "Password found at index: " << result_index << "\n";
-            std::cout << "Hash of Password: " << bytesToHex(result_hash, 32) << "\n";
-            break; // Exit loop if password is found
-        }
+            for (long long batch = 0; batch < num_batches; ++batch)
+            {
+                long long start = batch * passwords_per_batch;
+                long long end = min(start + passwords_per_batch, total_passwords);
+
+                // Calculate number of blocks needed for this batch
+                long long numBlocks = (end - start + blockSize - 1) / blockSize;
+
+                // Launch kernel for the current batch
+                find_password<<<numBlocks, blockSize>>>(start, end, d_target_password, d_found, d_result_index, d_salt, d_target_hash, d_result_hash);
+                cudaError_t err = cudaGetLastError();
+                if (err != cudaSuccess) {
+                    std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
+                }
+                cudaDeviceSynchronize();
+
+                // Copy results back to host
+                long long result_index;
+                cudaMemcpy(&found, d_found, sizeof(int), cudaMemcpyDeviceToHost);
+                cudaMemcpy(&result_index, d_result_index, sizeof(long long), cudaMemcpyDeviceToHost);
+                cudaMemcpy(result_hash, d_result_hash, 32 * sizeof(uint8_t), cudaMemcpyDeviceToHost);
+
+                if (found == 1)
+                {
+                    std::cout << "Password found at index: " << result_index << "\n";
+                    break; // Exit loop if password is found
+                }
+            }
+
+            // Free device memory
+            cudaFree(d_target_password);
+            cudaFree(d_found);
+            cudaFree(d_result_index);
     }
-
-    // Free device memory
-    cudaFree(d_target_password);
-    cudaFree(d_found);
-    cudaFree(d_result_index);
-
+    infile.close();
     return 0;
 }

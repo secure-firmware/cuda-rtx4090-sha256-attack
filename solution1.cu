@@ -143,7 +143,7 @@ int main(int argc, char* argv[]) {
         unsigned char target_hash[SHA256_DIGEST_LENGTH];
 
         // Convert hex strings to byte arrays
-        hex_to_bytes(salt_hex, salt);
+        hex_to_bytes(salt_hex, salt);   
         hex_to_bytes(target_hash_hex, target_hash);
 
         int password_length = 6; // Example password length
