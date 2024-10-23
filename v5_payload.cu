@@ -85,9 +85,18 @@ __device__ size_t cuda_strlen(const char *str)
 
 class SHA256
 {
-
 public:
+    uint32_t m_state[8]; // A, B, C, D, E, F, G, H
+    uint32_t m_saltState[8]; // State after salt processing
+    uint64_t m_saltBitlen; // Bit length after salt processing
+    uint32_t m_saltBlocklen; // Block length after salt processing
+
     __device__ __host__ SHA256()
+    {
+        reset();
+    }
+
+    __device__ __host__ void reset()
     {
         m_blocklen = 0;
         m_bitlen = 0;
@@ -99,6 +108,30 @@ public:
         m_state[5] = 0x9b05688c;
         m_state[6] = 0x1f83d9ab;
         m_state[7] = 0x5be0cd19;
+    }
+
+    __device__ __host__ void initWithSalt(const uint8_t *salt, size_t salt_length)
+    {
+        reset();
+        update(salt, salt_length);
+
+        //Store the state after processing with the salt
+        for (int i = 0; i < 8; i++)
+        {
+            m_saltState[i] = m_state[i];
+        }
+        m_saltBitlen = m_bitlen;
+        m_saltBlocklen = m_blocklen;
+    }
+
+    __device__ __host__ void resetToSaltState()
+    {
+        for (int i = 0; i < 8; i++)
+        {
+            m_state[i] = m_saltState[i];
+        }
+        m_bitlen = m_saltBitlen;
+        m_blocklen = m_saltBlocklen;
     }
 
     __device__ __host__ void update(const uint8_t *data, size_t length)
@@ -125,7 +158,6 @@ private:
     uint8_t m_data[64];
     uint32_t m_blocklen;
     uint64_t m_bitlen;
-    uint32_t m_state[8]; // A, B, C, D, E, F, G, H
 
     __device__ __host__ static uint32_t rotr(uint32_t x, uint32_t n)
     {
@@ -286,53 +318,84 @@ void hexToBytes(const char *hexString, uint8_t *byteArray)
     }
 }
 
-
-__global__ __launch_bounds__(256, 8) void find_password_optimized(long long start, long long end, int *found, long long *result_index) {
-    
-    __shared__ char shared_charset[62];
-    __shared__ uint8_t shared_target_hash[32];
-    
-    // Load charset into shared memory
-    if (threadIdx.x < 62) {
-        shared_charset[threadIdx.x] = charset[threadIdx.x];
-    }
-
-    // Load target hash into shared memory
-    if (threadIdx.x < 32) {
-        shared_target_hash[threadIdx.x] = d_target_hash[threadIdx.x];
-    }
-    __syncthreads();
-
-    long long idx = blockIdx.x * blockDim.x + threadIdx.x + start;
-    uint8_t sha256_uint8[32];
-
-    // Generate password directly without intermediate storage
-    char combined_salt[salt_length + password_length + 1];
-    for (int i = 0; i < salt_length; ++i) {
-        combined_salt[i] = d_target_salt[i];
-    }
-    for (int i = 0; i < password_length; ++i) {
-        combined_salt[salt_length + i] = shared_charset[idx % charset_size];
+__device__ void generate_password(long long idx, char *password)
+{
+    for (int i = 0; i < password_length; ++i)
+    {
+        password[i] = charset[idx % charset_size];
         idx /= charset_size;
     }
-    combined_salt[salt_length + password_length] = '\0';
+    password[password_length] = '\0'; // Null-terminate the string
+}
 
-    // Hash generation
-    SHA256 sha256;
-    sha256.update((const uint8_t *)combined_salt, salt_length + password_length);
-    sha256.digest(sha256_uint8);
-
-    // Coalesced comparison of hash
-    bool match = true;
-    for (int i = 0; i < 32; ++i) {
-        if (sha256_uint8[i] != shared_target_hash[i]) {
-            match = false;
-            break;
+__device__ bool compareUint8Arrays(const uint8_t* array1, const uint8_t* array2, size_t length) {
+    for (size_t i = 0; i < length; ++i) {
+        if (array1[i] != array2[i]) {
+            return false; // Arrays differ at this position
         }
     }
-    
-    if (match && atomicExch(found, 1) == 0) {
-        *result_index = blockIdx.x * blockDim.x + threadIdx.x + start;
+    return true; // Arrays are identical
+}
+
+__global__ void find_passwords_optimized_multi(
+    const char* salt,                // Input: Salt for hash
+    const uint8_t* target_hashes,    // Input: Array of target hashes
+    int num_target_hashes,           // Input: Number of target hashes
+    int* found_flags,                // Output: Flags indicating which hashes are found
+    long long* result_indices,       // Output: Indices of found passwords
+    unsigned char* checked_bitmap,   // Input/Output: Bitmap to track checked passwords
+    unsigned long long* global_start_index,   // Input/Output: Global counter for password indices
+    int batch_size                  // Input: Number of passwords each thread processes
+) {
+    // Shared memory for storing the initial SHA256 state with salt
+    __shared__ SHA256 shared_sha256;
+
+    // Initialize the SHA256 state with salt (only first thread in block)
+    if (threadIdx.x == 0) {
+        shared_sha256.initWithSalt((const uint8_t*)salt, salt_length);
+    }
+
+    __syncthreads(); // Ensure all threads have access to initialized shared memory
+
+    // Get the starting index for this thread's batch of passwords
+    long long thread_start_index = atomicAdd((unsigned long long*)global_start_index, (unsigned long long)batch_size);
+    uint8_t hash[32]; // Buffer to store computed hash
+
+    // Initialize SHA256 object for this thread
+    SHA256 sha256 = shared_sha256;
+
+    // Process batch_size number of passwords
+    for (int i = 0; i < batch_size; i++) {
+        long long idx = thread_start_index + i;
+        
+        // Check if this password index has already been processed
+        int byte_index = idx / 8;
+        int bit_index = idx % 8;
+        unsigned int mask = 1U << bit_index;
+        unsigned char old = atomicOr((unsigned int*)&checked_bitmap[byte_index], (unsigned int)mask);
+        if (old & mask) {
+            continue;  // Skip already checked passwords
+        }
+
+        // Generate password for this index
+        char password[password_length + 1];
+        generate_password(idx, password);
+
+        // Compute hash for the password
+        sha256.resetToSaltState();
+        sha256.update((const uint8_t*)password, password_length);
+        sha256.digest(hash);
+
+        // Compare with all target hashes
+        for (int j = 0; j < num_target_hashes; j++) {
+            if (!found_flags[j] && compareUint8Arrays(hash, target_hashes + j * 32, 32)) {
+                // Atomically set the found flag and store the result index
+                int old = atomicExch(&found_flags[j], 1);
+                if (old == 0) {
+                    result_indices[j] = idx;
+                }
+            }
+        }
     }
 }
 
@@ -355,13 +418,13 @@ int main()
     for (int i = 0; i < NUM_BLOCK_SIZES; i++) {
         int blockSize = blockSizes[i];
         int numBlocks;
-        cudaOccupancyMaxActiveBlocksPerMultiprocessor(&numBlocks, find_password_optimized, blockSize, 0);
+        cudaOccupancyMaxActiveBlocksPerMultiprocessor(&numBlocks, find_passwords_optimized_multi, blockSize, 0);
         float occupancy = (float)(numBlocks * blockSize) / maxThreadsPerBlock;
         std::cout << "Block size: " << blockSize << ", Occupancy: " << occupancy * 100 << "%" << std::endl;
     }
 
     // Open the input file
-    std::ifstream infile("payload.txt");
+    std::ifstream infile("in.txt");
     if (!infile) {
         std::cerr << "Unable to open file in.txt";
         return 1;
@@ -370,8 +433,8 @@ int main()
     std::string line;
 
     while (std::getline(infile, line)) {
-            std::string salt_hex_string = line.substr(65, 81); // First 24 characters for salt (12 bytes)
-            std::string target_hash_string = line.substr(0, 64); // Next 64 characters for target hash (32 bytes)
+            std::string salt_hex_string = line.substr(0, 16); // First 24 characters for salt (12 bytes)
+            std::string target_hash_string = line.substr(18, 82); // Next 64 characters for target hash (32 bytes)
 
             printf("Salt: %s\n", salt_hex_string.c_str());
             printf("Target Hash: %s\n", target_hash_string.c_str());
@@ -383,58 +446,64 @@ int main()
             // Convert the target hash from hex string to byte array
             hexToBytes(target_hash_hex, target_hash);
 
-            cudaMemcpyToSymbol(d_target_salt, target_salt, (salt_length + 1) * sizeof(char));
-            cudaMemcpyToSymbol(d_target_hash, target_hash, 32 * sizeof(uint8_t));
 
+            unsigned long long total_passwords = 62ULL * 62 * 62 * 62 * 62 * 62; // 62^6
+            int blockSize = 256; // Adjust based on your GPU capabilities
+            int batch_size = 100; // Adjust based on optimal performance
+            int numBlocks = (total_passwords + blockSize * batch_size - 1) / (blockSize * batch_size);
 
-            long long total_passwords = 62LL * 62 * 62 * 62 * 62 * 62; // 62^6 with explicit long long
-            long long blockSize = 128;                                 // Number of threads per block
-            long long passwords_per_batch = 1000000;                   // Number of passwords to process in one batch
-            long long num_batches = (total_passwords + passwords_per_batch - 1) / passwords_per_batch;
+            int *d_found_flags;
+            long long *d_result_indices;
+            unsigned char *d_checked_bitmap;
+            unsigned long long *d_global_start_index;
 
-            int *d_found;
+            cudaMalloc(&d_found_flags, sizeof(int));
+            cudaMalloc(&d_result_indices, sizeof(long long));
+            cudaMalloc(&d_checked_bitmap, (total_passwords + 7) / 8);
+            cudaMalloc(&d_global_start_index, sizeof(unsigned long long));
+
             int found = 0;
-            long long *d_result_index;
+            cudaMemset(d_found_flags, 0, sizeof(int));
+            cudaMemset(d_checked_bitmap, 0, (total_passwords + 7) / 8);
+            unsigned long long global_start_index = 0;
+            cudaMemcpy(d_global_start_index, &global_start_index, sizeof(unsigned long long), cudaMemcpyHostToDevice);
 
-            cudaMalloc(&d_found, sizeof(int));
-            cudaMalloc(&d_result_index, sizeof(long long));
 
-            cudaMemcpy(d_found, &found, sizeof(int), cudaMemcpyHostToDevice);
+            // Allocate and copy salt and target hash to device
+            char *d_salt;
+            uint8_t *d_target_hash;
+            cudaMalloc(&d_salt, salt_length * sizeof(char));
+            cudaMalloc(&d_target_hash, 32 * sizeof(uint8_t));
+            cudaMemcpy(d_salt, target_salt, salt_length * sizeof(char), cudaMemcpyHostToDevice);
+            cudaMemcpy(d_target_hash, target_hash, 32 * sizeof(uint8_t), cudaMemcpyHostToDevice);
 
             // Start timing
             auto start_time = std::chrono::high_resolution_clock::now();
+            
+            // Launch kernel
+            find_passwords_optimized_multi<<<numBlocks, blockSize>>>(
+                d_salt, d_target_hash, 1, d_found_flags, d_result_indices,
+                d_checked_bitmap, d_global_start_index, batch_size);
 
-            for (long long batch = 0; batch < num_batches; ++batch)
-            {
-                long long start = batch * passwords_per_batch;
-                long long end = min(start + passwords_per_batch, total_passwords);
+            cudaDeviceSynchronize();
 
-                // Calculate number of blocks needed for this batch
-                long long numBlocks = (end - start + blockSize - 1) / blockSize;
-
-                // Launch optimized kernel
-                find_password_optimized<<<numBlocks, blockSize>>>(start, end, d_found, d_result_index);
-                cudaError_t err = cudaGetLastError();
-                if (err != cudaSuccess) {
-                    std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
-                }
-                cudaDeviceSynchronize();
-
-                // Copy results back to host
-                long long result_index;
-                cudaMemcpy(&found, d_found, sizeof(int), cudaMemcpyDeviceToHost);
-                cudaMemcpy(&result_index, d_result_index, sizeof(long long), cudaMemcpyDeviceToHost);
-
-                if (found == 1)
-                {
-                    std::cout << "Password found at index: " << result_index << "\n";
-                    break; // Exit loop if password is found
-                }
-            }
+            // Copy results back to host
+            long long result_index;
+            cudaMemcpy(&found, d_found_flags, sizeof(int), cudaMemcpyDeviceToHost);
+            cudaMemcpy(&result_index, d_result_indices, sizeof(long long), cudaMemcpyDeviceToHost);
 
             // End timing
             auto end_time = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double> elapsed_seconds = end_time - start_time;
+
+            if (found == 1)
+            {
+                std::cout << "Password found at index: " << result_index << "\n";
+            }
+            else
+            {
+                std::cout << "Password not found\n";
+            }
 
             // Calculate GH/s
             double hashes_per_second = total_passwords / elapsed_seconds.count();
@@ -442,9 +511,14 @@ int main()
             std::cout << "Performance: " << gigahashes_per_second << " GH/s" << std::endl;
 
             // Free device memory
-            cudaFree(d_found);
-            cudaFree(d_result_index);
-    }
-    infile.close();
-    return 0;
+            cudaFree(d_found_flags);
+            cudaFree(d_result_indices);
+            cudaFree(d_checked_bitmap);
+            cudaFree(d_global_start_index);
+            cudaFree(d_salt);
+            cudaFree(d_target_hash);
+        }
+
+        infile.close();
+        return 0;
 }

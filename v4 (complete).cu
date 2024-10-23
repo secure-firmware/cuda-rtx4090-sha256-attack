@@ -371,7 +371,7 @@ int main()
 
     while (std::getline(infile, line)) {
             std::string salt_hex_string = line.substr(0, 16); // First 24 characters for salt (12 bytes)
-            std::string target_hash_string = line.substr(18, 66); // Next 64 characters for target hash (32 bytes)
+            std::string target_hash_string = line.substr(18, 82); // Next 64 characters for target hash (32 bytes)
 
             printf("Salt: %s\n", salt_hex_string.c_str());
             printf("Target Hash: %s\n", target_hash_string.c_str());
