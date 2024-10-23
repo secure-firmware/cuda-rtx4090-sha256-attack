@@ -19,6 +19,10 @@
 #define RESET   "\033[0m"
 #define BOLD    "\033[1m"
 
+#define MAX_TARGETS 100
+#define OPTIMAL_BLOCK_SIZE 256
+#define BATCH_SIZE 1000
+
 // __constant__ array for device-side K values
 __constant__ static const uint32_t K[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
@@ -338,6 +342,7 @@ __device__ void generate_password(long long idx, char *password)
     password[password_length] = '\0'; // Null-terminate the string
 }
 
+
 __device__ bool compareUint8Arrays(const uint8_t* array1, const uint8_t* array2, size_t length) {
     for (size_t i = 0; i < length; ++i) {
         if (array1[i] != array2[i]) {
@@ -348,66 +353,72 @@ __device__ bool compareUint8Arrays(const uint8_t* array1, const uint8_t* array2,
 }
 
 __global__ void find_passwords_optimized_multi(
-    const char* salt,                // Input: Salt for hash
-    const uint8_t* target_hashes,    // Input: Array of target hashes
-    int num_target_hashes,           // Input: Number of target hashes
-    int* found_flags,                // Output: Flags indicating which hashes are found
-    long long* result_indices,       // Output: Indices of found passwords
-    unsigned char* checked_bitmap,   // Input/Output: Bitmap to track checked passwords
-    unsigned long long* global_start_index,   // Input/Output: Global counter for password indices
-    int batch_size                  // Input: Number of passwords each thread processes
+    const char* salt,                
+    const uint8_t* target_hashes,    
+    int num_target_hashes,           
+    int* found_flags,                
+    long long* result_indices,       
+    unsigned long long* global_start_index,   
+    int batch_size                  
 ) {
-    // Shared memory for storing the initial SHA256 state with salt
+    // Shared memory for target hashes and salt state
+    __shared__ uint8_t shared_target_hashes[32 * MAX_TARGETS];
     __shared__ SHA256 shared_sha256;
 
-    // Initialize the SHA256 state with salt (only first thread in block)
+    // Load target hashes into shared memory
+    if (threadIdx.x < num_target_hashes) {
+        for (int i = 0; i < 32; i++) {
+            shared_target_hashes[threadIdx.x * 32 + i] = target_hashes[threadIdx.x * 32 + i];
+        }
+    }
+
+    // Initialize salt state once per block
     if (threadIdx.x == 0) {
         shared_sha256.initWithSalt((const uint8_t*)salt, salt_length);
     }
 
-    __syncthreads(); // Ensure all threads have access to initialized shared memory
+    __syncthreads();
 
-    // Get the starting index for this thread's batch of passwords
-    long long thread_start_index = atomicAdd((unsigned long long*)global_start_index, (unsigned long long)batch_size);
-    uint8_t hash[32]; // Buffer to store computed hash
-
-    // Initialize SHA256 object for this thread
+    // Get batch of passwords for this thread
+    long long thread_start_index = atomicAdd(global_start_index, (unsigned long long)batch_size);
+    uint8_t hash[32];
     SHA256 sha256 = shared_sha256;
 
-    // Process batch_size number of passwords
+    // Process passwords in batch
+    #pragma unroll 4
     for (int i = 0; i < batch_size; i++) {
         long long idx = thread_start_index + i;
         
-        // Check if this password index has already been processed
-        int byte_index = idx / 8;
-        int bit_index = idx % 8;
-        unsigned int mask = 1U << bit_index;
-        unsigned char old = atomicOr((unsigned int*)&checked_bitmap[byte_index], (unsigned int)mask);
-        if (old & mask) {
-            continue;  // Skip already checked passwords
-        }
-
-        // Generate password for this index
+        // Generate and hash password
         char password[password_length + 1];
         generate_password(idx, password);
-
-        // Compute hash for the password
+        
         sha256.resetToSaltState();
         sha256.update((const uint8_t*)password, password_length);
         sha256.digest(hash);
 
-        // Compare with all target hashes
+        // Quick compare first 8 bytes before full comparison
+        const uint2* quick_hash = (const uint2*)hash;
+        
+        // Check against all target hashes
         for (int j = 0; j < num_target_hashes; j++) {
-            if (!found_flags[j] && compareUint8Arrays(hash, target_hashes + j * 32, 32)) {
-                // Atomically set the found flag and store the result index
-                int old = atomicExch(&found_flags[j], 1);
-                if (old == 0) {
-                    result_indices[j] = idx;
+            if (!found_flags[j]) {
+                const uint2* quick_target = (const uint2*)&shared_target_hashes[j * 32];
+                if (quick_hash[0].x == quick_target[0].x && 
+                    quick_hash[0].y == quick_target[0].y) {
+                    // Full comparison only if quick check passes
+                    if (compareUint8Arrays(hash, &shared_target_hashes[j * 32], 32)) {
+                        int old = atomicExch(&found_flags[j], 1);
+                        if (old == 0) {
+                            result_indices[j] = idx;
+                        }
+                    }
                 }
             }
         }
     }
 }
+
 
 __device__ int cuda_strcmp(const char* str1, const char* str2) {
     while (*str1 && (*str1 == *str2)) {
@@ -415,6 +426,16 @@ __device__ int cuda_strcmp(const char* str1, const char* str2) {
         str2++;
     }
     return *(const unsigned char*)str1 - *(const unsigned char*)str2;
+}
+
+void host_generate_password(long long idx, char *password)
+{
+    for (int i = 0; i < password_length; ++i)
+    {
+        password[i] = charset[idx % charset_size];
+        idx /= charset_size;
+    }
+    password[password_length] = '\0'; // Null-terminate the string
 }
 
 //Test Code
@@ -570,24 +591,8 @@ __global__ void test_hash_comparison() {
     printf("Match result: %s%s%s\n", match2 ? GREEN : RED, match2 ? "✓" : "✗", RESET);
 }
 
-int main()
-{
-    //All testing...
-    test_specific_case();
-
-    test_password_generation<<<1,1>>>();
-    cudaDeviceSynchronize();
-
-    test_salt_processing<<<1,1>>>();
-    cudaDeviceSynchronize();
-
-    test_bitmap_tracking<<<1,1>>>();
-    cudaDeviceSynchronize();
-
-    test_hash_comparison<<<1,1>>>();
-    cudaDeviceSynchronize();
-
-
+int main() {
+    // GPU configuration for RTX 4090
     int maxThreadsPerBlock;
     int maxBlocksPerSM;
     int numSMs;
@@ -596,18 +601,7 @@ int main()
     cudaDeviceGetAttribute(&maxBlocksPerSM, cudaDevAttrMaxBlocksPerMultiprocessor, 0);
     cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, 0);
 
-    const int NUM_BLOCK_SIZES = 5;
-    int blockSizes[NUM_BLOCK_SIZES] = {64, 128, 256, 512, 1024};
-
-    for (int i = 0; i < NUM_BLOCK_SIZES; i++) {
-        int blockSize = blockSizes[i];
-        int numBlocks;
-        cudaOccupancyMaxActiveBlocksPerMultiprocessor(&numBlocks, find_passwords_optimized_multi, blockSize, 0);
-        float occupancy = (float)(numBlocks * blockSize) / maxThreadsPerBlock;
-        std::cout << "Block size: " << blockSize << ", Occupancy: " << occupancy * 100 << "%" << std::endl;
-    }
-
-    // Open the input file
+    // Open input file
     std::ifstream infile("in.txt");
     if (!infile) {
         std::cerr << "Unable to open file in.txt";
@@ -615,94 +609,101 @@ int main()
     }
 
     std::string line;
-
     while (std::getline(infile, line)) {
-            std::string salt_hex_string = line.substr(0, 16); // First 24 characters for salt (12 bytes)
-            std::string target_hash_string = line.substr(18, 82); // Next 64 characters for target hash (32 bytes)
+        std::string salt_hex_string = line.substr(0, 16);
+        std::string target_hash_string = line.substr(18, 64);
 
-            // printf("Salt: %s\n", salt_hex_string.c_str());
-            // printf("Target Hash: %s\n", target_hash_string.c_str());
+        printf("=== Processing New Hash ===\n");
+        printf("▶ Salt: %s\n", salt_hex_string.c_str());
+        printf("▶ Target Hash: %s\n", target_hash_string.c_str());
 
-            const char *target_salt = salt_hex_string.c_str();
-            const char *target_hash_hex = target_hash_string.c_str();
-            uint8_t target_hash[32];
+        const char *target_salt = salt_hex_string.c_str();
+        const char *target_hash_hex = target_hash_string.c_str();
+        uint8_t target_hash[32];
+        hexToBytes(target_hash_hex, target_hash);
 
-            // Convert the target hash from hex string to byte array
-            hexToBytes(target_hash_hex, target_hash);
+        // Calculate total passwords and optimal configuration
+        unsigned long long total_passwords = 62ULL * 62 * 62 * 62 * 62 * 62; // 62^6
+        int blockSize = 256;
+        int batch_size = 1000;
+        int numBlocks = numSMs * 32; // Optimal for RTX 4090
 
+        // Allocate device memory
+        int *d_found_flags;
+        long long *d_result_indices;
+        unsigned long long *d_global_start_index;
+        char *d_salt;
+        uint8_t *d_target_hash;
 
-            unsigned long long total_passwords = 62ULL * 62 * 62 * 62 * 62 * 62; // 62^6
-            int blockSize = 256; // Adjust based on your GPU capabilities
-            int batch_size = 100; // Adjust based on optimal performance
-            int numBlocks = (total_passwords + blockSize * batch_size - 1) / (blockSize * batch_size);
+        cudaMalloc(&d_found_flags, sizeof(int));
+        cudaMalloc(&d_result_indices, sizeof(long long));
+        cudaMalloc(&d_global_start_index, sizeof(unsigned long long));
+        cudaMalloc(&d_salt, salt_length * sizeof(char));
+        cudaMalloc(&d_target_hash, 32 * sizeof(uint8_t));
 
-            int *d_found_flags;
-            long long *d_result_indices;
-            unsigned char *d_checked_bitmap;
-            unsigned long long *d_global_start_index;
+        // Initialize variables
+        bool found = false;
+        long long result_index = 0;
+        unsigned long long processed_passwords = 0;
+        
+        // Start timing
+        auto start_time = std::chrono::high_resolution_clock::now();
 
-            cudaMalloc(&d_found_flags, sizeof(int));
-            cudaMalloc(&d_result_indices, sizeof(long long));
-            cudaMalloc(&d_checked_bitmap, (total_passwords + 7) / 8);
-            cudaMalloc(&d_global_start_index, sizeof(unsigned long long));
-
-            int found = 0;
+        // Process all password space
+        while (!found && processed_passwords < total_passwords) {
+            // Reset device memory for this batch
             cudaMemset(d_found_flags, 0, sizeof(int));
-            cudaMemset(d_checked_bitmap, 0, (total_passwords + 7) / 8);
-            unsigned long long global_start_index = 0;
+            unsigned long long global_start_index = processed_passwords;
             cudaMemcpy(d_global_start_index, &global_start_index, sizeof(unsigned long long), cudaMemcpyHostToDevice);
-
-
-            // Allocate and copy salt and target hash to device
-            char *d_salt;
-            uint8_t *d_target_hash;
-            cudaMalloc(&d_salt, salt_length * sizeof(char));
-            cudaMalloc(&d_target_hash, 32 * sizeof(uint8_t));
             cudaMemcpy(d_salt, target_salt, salt_length * sizeof(char), cudaMemcpyHostToDevice);
             cudaMemcpy(d_target_hash, target_hash, 32 * sizeof(uint8_t), cudaMemcpyHostToDevice);
 
-            // Start timing
-            auto start_time = std::chrono::high_resolution_clock::now();
-            
             // Launch kernel
             find_passwords_optimized_multi<<<numBlocks, blockSize>>>(
                 d_salt, d_target_hash, 1, d_found_flags, d_result_indices,
-                d_checked_bitmap, d_global_start_index, batch_size);
+                d_global_start_index, batch_size);
 
             cudaDeviceSynchronize();
 
-            // Copy results back to host
-            long long result_index;
-            cudaMemcpy(&found, d_found_flags, sizeof(int), cudaMemcpyDeviceToHost);
-            cudaMemcpy(&result_index, d_result_indices, sizeof(long long), cudaMemcpyDeviceToHost);
-
-            // End timing
-            auto end_time = std::chrono::high_resolution_clock::now();
-            std::chrono::duration<double> elapsed_seconds = end_time - start_time;
-
-            if (found == 1)
-            {
-                // std::cout << "Password found at index: " << result_index << "\n";
-            }
-            else
-            {
-                // std::cout << "Password not found\n";
+            // Check results
+            int found_flag;
+            cudaMemcpy(&found_flag, d_found_flags, sizeof(int), cudaMemcpyDeviceToHost);
+            if (found_flag) {
+                cudaMemcpy(&result_index, d_result_indices, sizeof(long long), cudaMemcpyDeviceToHost);
+                found = true;
             }
 
-            // Calculate GH/s
-            double hashes_per_second = total_passwords / elapsed_seconds.count();
-            double gigahashes_per_second = hashes_per_second / 1e9;
-            // std::cout << "Performance: " << gigahashes_per_second << " GH/s" << std::endl;
-
-            // Free device memory
-            cudaFree(d_found_flags);
-            cudaFree(d_result_indices);
-            cudaFree(d_checked_bitmap);
-            cudaFree(d_global_start_index);
-            cudaFree(d_salt);
-            cudaFree(d_target_hash);
+            processed_passwords += (unsigned long long)numBlocks * blockSize * batch_size;
         }
 
-        infile.close();
-        return 0;
+        // Calculate performance
+        auto end_time = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> elapsed_seconds = end_time - start_time;
+        double hashes_per_second = total_passwords / elapsed_seconds.count();
+        double gigahashes_per_second = hashes_per_second / 1e9;
+
+
+        // Print results with colors
+        if (found) {
+            printf("\033[1;32m✓ Password found at index: %lld\033[0m\n", result_index); // Bright green
+            // Generate and display the actual password
+            char found_password[password_length + 1];
+            host_generate_password(result_index, found_password);
+            printf("\033[1;36m▶ Found password: %s\033[0m\n", found_password); // Bright cyan
+        } else {
+            printf("\033[1;31m✗ Password not found\033[0m\n"); // Bright red
+        }
+        printf("\033[1;33m▶ Performance: %.2f GH/s\033[0m\n", gigahashes_per_second); // Bright yellow
+
+
+        // Free device memory
+        cudaFree(d_found_flags);
+        cudaFree(d_result_indices);
+        cudaFree(d_global_start_index);
+        cudaFree(d_salt);
+        cudaFree(d_target_hash);
+    }
+
+    infile.close();
+    return 0;
 }
