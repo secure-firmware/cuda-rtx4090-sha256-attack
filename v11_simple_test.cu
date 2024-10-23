@@ -81,148 +81,70 @@ __device__ bool bloom_check(const uint8_t* hash) {
            (bloom_filter[h2 % BLOOM_SIZE] & (1U << (h2 & 31)));
 }
 
-class SHA256
-{
-public:
-    uint32_t m_state[8]; // A, B, C, D, E, F, G, H
-    uint32_t m_saltState[8]; // State after salt processing
-    uint64_t m_saltBitlen; // Bit length after salt processing
-    uint32_t m_saltBlocklen; // Block length after salt processing
-
-    __device__ __host__ SHA256()
-    {
-        reset();
-    }
-
-    __device__ __host__ void reset()
-    {
-        m_blocklen = 0;
-        m_bitlen = 0;
-        m_state[0] = 0x6a09e667;
-        m_state[1] = 0xbb67ae85;
-        m_state[2] = 0x3c6ef372;
-        m_state[3] = 0xa54ff53a;
-        m_state[4] = 0x510e527f;
-        m_state[5] = 0x9b05688c;
-        m_state[6] = 0x1f83d9ab;
-        m_state[7] = 0x5be0cd19;
-    }
-
-    __device__ __host__ void initWithSalt(const uint8_t *salt, size_t salt_length)
-    {
-        reset();
-        update(salt, salt_length);
-
-        //Store the state after processing with the salt
-        for (int i = 0; i < 8; i++)
-        {
-            m_saltState[i] = m_state[i];
-        }
-        m_saltBitlen = m_bitlen;
-        m_saltBlocklen = m_blocklen;
-    }  
-
-    __device__ __host__ void resetToSaltState()
-    {
-        for (int i = 0; i < 8; i++)
-        {
-            m_state[i] = m_saltState[i];
-        }
-        m_bitlen = m_saltBitlen;
-        m_blocklen = m_saltBlocklen;
-    }
-
-    __device__ __host__ void update(const uint8_t *data, size_t length)
-    {
-        for (size_t i = 0; i < length; i++)
-        {
-            m_data[m_blocklen++] = data[i];
-            if (m_blocklen == 64)
-            {
-                transform();
-                m_bitlen += 512;
-                m_blocklen = 0;
-            }
-        }
-    }
-
-    __device__ __host__ void digest(uint8_t *hash)
-    {
-        pad();
-        revert(hash);
-    }
-
+class SHA256Optimized {
 private:
-    uint8_t m_data[64];
-    uint32_t m_blocklen;
-    uint64_t m_bitlen;
+    uint32_t m_state[8];
+    uint8_t m_data[64];  // Single block buffer - we never need more than one block
 
-    __device__ __host__ static uint32_t rotr(uint32_t x, uint32_t n)
-    {
-        return (x >> n) | (x << (32 - n));
-    }
+    // Constants specific to our case:
+    // - 6 bytes password
+    // - 8 bytes salt
+    // - Total 14 bytes input < 64 bytes (single block)
+    // - Final block will have:
+    //   * 14 bytes of data (password + salt)
+    //   * 1 byte 0x80 padding
+    //   * 41 bytes of zero padding
+    //   * 8 bytes for length (112 bits = 0x70)
+    static const uint64_t TOTAL_INPUT_BITS = 14 * 8;  // 112 bits
 
-    __device__ __host__ static uint32_t choose(uint32_t e, uint32_t f, uint32_t g)
-    {
-        return (e & f) ^ (~e & g);
-    }
-
-    __device__ __host__ static uint32_t majority(uint32_t a, uint32_t b, uint32_t c)
-    {
-        return (a & (b | c)) | (b & c);
-    }
-
-    __device__ __host__ static uint32_t sig0(uint32_t x)
-    {
-        return rotr(x, 7) ^ rotr(x, 18) ^ (x >> 3);
-    }
-
-    __device__ __host__ static uint32_t sig1(uint32_t x)
-    {
-        return rotr(x, 17) ^ rotr(x, 19) ^ (x >> 10);
-    }
-
-    __device__ __host__ void transform()
-    {
-        uint32_t maj, xorA, ch, xorE, sum, newA, newE, m[64];
+    __device__ void transform() {
+        uint32_t m[64];
         uint32_t state[8];
 
-        const uint32_t *k_array = K;
-
-        // Unroll the first loop for processing the message schedule array
-        #pragma unroll 16
-        for (uint8_t i = 0, j = 0; i < 16; i++, j += 4)
-        {
-            m[i] = (m_data[j] << 24) | (m_data[j + 1] << 16) | (m_data[j + 2] << 8) | m_data[j + 3];
+        // Load first 14 bytes (password + salt) into message schedule
+        // Only process the bytes we actually use
+        #pragma unroll 4
+        for(uint8_t i = 0; i < 4; i++) {
+            m[i] = (m_data[i*4] << 24) | (m_data[i*4 + 1] << 16) | 
+                   (m_data[i*4 + 2] << 8) | m_data[i*4 + 3];
         }
+        
+        // Handle remaining 2 bytes of data + padding start
+        m[3] = (m_data[12] << 24) | (m_data[13] << 16) | (0x80 << 8) | 0x00;
+        
+        // Zero padding blocks - we know these are always zero
+        #pragma unroll 10
+        for(uint8_t i = 4; i < 14; i++) {
+            m[i] = 0;
+        }
+        
+        // Length goes in last two words
+        m[14] = 0;
+        m[15] = TOTAL_INPUT_BITS;
 
-        // Unroll the second loop for the message schedule array
+        // Message schedule - only calculate what we need
         #pragma unroll 48
-        for (uint8_t k = 16; k < 64; k++)
-        {
-            m[k] = sig1(m[k - 2]) + m[k - 7] + sig0(m[k - 15]) + m[k - 16];
+        for(uint8_t i = 16; i < 64; i++) {
+            m[i] = sig1(m[i-2]) + m[i-7] + sig0(m[i-15]) + m[i-16];
         }
 
-        // Initialize state array with the current hash values
+        // Load state
         #pragma unroll 8
-        for (uint8_t i = 0; i < 8; i++)
-        {
+        for(uint8_t i = 0; i < 8; i++) {
             state[i] = m_state[i];
         }
 
-        // Main compression loop - fully unroll
+        // Main compression function - fully unrolled
         #pragma unroll 64
-        for (uint8_t i = 0; i < 64; i++)
-        {
-            maj = majority(state[0], state[1], state[2]);
-            xorA = rotr(state[0], 2) ^ rotr(state[0], 13) ^ rotr(state[0], 22);
-
-            ch = choose(state[4], state[5], state[6]);
-            xorE = rotr(state[4], 6) ^ rotr(state[4], 11) ^ rotr(state[4], 25);
-
-            sum = m[i] + k_array[i] + state[7] + ch + xorE;
-            newA = xorA + maj + sum;
-            newE = state[3] + sum;
+        for(uint8_t i = 0; i < 64; i++) {
+            uint32_t maj = majority(state[0], state[1], state[2]);
+            uint32_t xorA = rotr(state[0], 2) ^ rotr(state[0], 13) ^ rotr(state[0], 22);
+            uint32_t ch = choose(state[4], state[5], state[6]);
+            uint32_t xorE = rotr(state[4], 6) ^ rotr(state[4], 11) ^ rotr(state[4], 25);
+            
+            uint32_t sum = m[i] + K[i] + state[7] + ch + xorE;
+            uint32_t newA = xorA + maj + sum;
+            uint32_t newE = state[3] + sum;
 
             state[7] = state[6];
             state[6] = state[5];
@@ -234,69 +156,75 @@ private:
             state[0] = newA;
         }
 
-        // Add the compressed chunk to the current hash value
+        // Add compressed chunk to hash value
         #pragma unroll 8
-        for (uint8_t i = 0; i < 8; i++)
-        {
+        for(uint8_t i = 0; i < 8; i++) {
             m_state[i] += state[i];
         }
     }
 
-    __device__ __host__ void pad()
-    {
-        uint64_t i = m_blocklen;
-        uint8_t end = m_blocklen < 56 ? 56 : 64;
+    // Retain only the necessary helper functions
+    __device__ static uint32_t rotr(uint32_t x, uint32_t n) {
+        return (x >> n) | (x << (32 - n));
+    }
 
-        m_data[i++] = 0x80; // Append 1 bit followed by zeros
-        while (i < end)
-        {
-            m_data[i++] = 0x00;
+    __device__ static uint32_t choose(uint32_t e, uint32_t f, uint32_t g) {
+        return (e & f) ^ (~e & g);
+    }
+
+    __device__ static uint32_t majority(uint32_t a, uint32_t b, uint32_t c) {
+        return (a & (b | c)) | (b & c);
+    }
+
+    __device__ static uint32_t sig0(uint32_t x) {
+        return rotr(x, 7) ^ rotr(x, 18) ^ (x >> 3);
+    }
+
+    __device__ static uint32_t sig1(uint32_t x) {
+        return rotr(x, 17) ^ rotr(x, 19) ^ (x >> 10);
+    }
+
+public:
+    __device__ SHA256Optimized() {
+        // Initialize hash values
+        m_state[0] = 0x6a09e667;
+        m_state[1] = 0xbb67ae85;
+        m_state[2] = 0x3c6ef372;
+        m_state[3] = 0xa54ff53a;
+        m_state[4] = 0x510e527f;
+        m_state[5] = 0x9b05688c;
+        m_state[6] = 0x1f83d9ab;
+        m_state[7] = 0x5be0cd19;
+    }
+
+    __device__ void hashPasswordAndSalt(const char* password, const uint8_t* salt) {
+        // Copy password (6 bytes) and salt (8 bytes) directly
+        #pragma unroll 6
+        for(int i = 0; i < 6; i++) {
+            m_data[i] = password[i];
         }
-
-        if (m_blocklen >= 56)
-        {
-            transform();
-            memset(m_data, 0, 56);
+        #pragma unroll 8
+        for(int i = 0; i < 8; i++) {
+            m_data[i + 6] = salt[i];
         }
-
-        m_bitlen += m_blocklen * 8;
-        m_data[63] = m_bitlen;
-        m_data[62] = m_bitlen >> 8;
-        m_data[61] = m_bitlen >> 16;
-        m_data[60] = m_bitlen >> 24;
-        m_data[59] = m_bitlen >> 32;
-        m_data[58] = m_bitlen >> 40;
-        m_data[57] = m_bitlen >> 48;
-        m_data[56] = m_bitlen >> 56;
+        
+        // Single transform handles everything
         transform();
     }
 
-    __device__ __host__ void revert(uint8_t *hash)
-    {
-        for (uint8_t i = 0; i < 4; i++)
-        {
-            for (uint8_t j = 0; j < 8; j++)
-            {
-                hash[i + (j * 4)] = (m_state[j] >> (24 - i * 8)) & 0x000000ff;
-            }
+    __device__ void getHash(uint8_t* hash) {
+        // Convert hash to bytes (big endian)
+        #pragma unroll 8
+        for(uint8_t i = 0; i < 8; i++) {
+            hash[i*4] = (m_state[i] >> 24) & 0xFF;
+            hash[i*4 + 1] = (m_state[i] >> 16) & 0xFF;
+            hash[i*4 + 2] = (m_state[i] >> 8) & 0xFF;
+            hash[i*4 + 3] = m_state[i] & 0xFF;
         }
     }
 };
 
 #endif
-
-__device__ void computeHash(const char *password, const uint8_t *salt, uint8_t *hashOutput) {
-    SHA256 sha256;
-    
-    // First update with password
-    sha256.update((const uint8_t *)password, 6);
-    
-    // Then update with salt bytes
-    sha256.update(salt, 16/2);  // salt_length/2 because hex string is twice the byte length
-    
-    // Get final hash
-    sha256.digest(hashOutput);
-}
 
 
 
@@ -331,24 +259,74 @@ __device__ bool compareUint8Arrays(const uint8_t* array1, const uint8_t* array2,
     return true; // Arrays are identical
 }
 
+__device__ void debugHash(const char* password, const uint8_t* salt) {
+    printf("Password + salt bytes:\n");
+    printf("Message: ");
+    for(int i = 0; i < 6; i++) {
+        printf("%02x", (unsigned char)password[i]);
+    }
+    for(int i = 0; i < 8; i++) {
+        printf("%02x", salt[i]);
+    }
+    printf("\n");
+
+    SHA256Optimized sha256;
+    uint8_t hash[32];
+    sha256.hashPasswordAndSalt(password, salt);
+    sha256.getHash(hash);
+
+    printf("Hash: ");
+    for(int i = 0; i < 32; i++) {
+        printf("%02x", hash[i]);
+    }
+    printf("\n");
+}
+
+__device__ void testCompareArrays() {
+    printf(BOLD CYAN "Testing compareUint8Arrays function\n" RESET);
+    
+    // Test case 1: Identical arrays
+    uint8_t arr1[] = {0x12, 0x34, 0x56, 0x78};
+    uint8_t arr2[] = {0x12, 0x34, 0x56, 0x78};
+    bool test1 = compareUint8Arrays(arr1, arr2, 4);
+    printf("Test 1 (Identical): %s\n", test1 ? GREEN "PASS" RESET : RED "FAIL" RESET);
+
+    // Test case 2: Different arrays
+    uint8_t arr3[] = {0x12, 0x34, 0x56, 0x79};
+    bool test2 = compareUint8Arrays(arr1, arr3, 4);
+    printf("Test 2 (Different): %s\n", !test2 ? GREEN "PASS" RESET : RED "FAIL" RESET);
+
+    // Test case 3: First byte different
+    uint8_t arr4[] = {0x13, 0x34, 0x56, 0x78};
+    bool test3 = compareUint8Arrays(arr1, arr4, 4);
+    printf("Test 3 (First byte): %s\n", !test3 ? GREEN "PASS" RESET : RED "FAIL" RESET);
+}
+
+
+
+
+
+
 
 __global__ void find_passwords_optimized_multi(
     const uint8_t* __restrict__ salt,                
     const uint8_t* __restrict__ target_hashes,    
     int num_target_hashes,           
-    unsigned long long* global_start_index,   
     int batch_size,
     unsigned long long lowest_unfound_index  
 ) {
     long long base_index = lowest_unfound_index + blockIdx.x * blockDim.x + threadIdx.x;
     
-    // Quick prefix check using shared memory
-    __shared__ uint64_t quick_check[256];
+    // Increase shared memory size if needed
+    __shared__ uint64_t quick_check[512];  // Increased size
     if (threadIdx.x < num_target_hashes) {
         quick_check[threadIdx.x] = *(const uint64_t*)(target_hashes + threadIdx.x * 32);
     }
     __syncthreads();
 
+
+    SHA256Optimized sha256;
+    
     for (int i = 0; i < batch_size; i++) {
         long long idx = base_index + i * gridDim.x * blockDim.x;
         if (idx >= total_passwords) return;
@@ -357,14 +335,11 @@ __global__ void find_passwords_optimized_multi(
         generate_password(idx, password);
 
         uint8_t hash[32];
-        SHA256 sha256;
-        sha256.update((const uint8_t*)password, password_length);
-        sha256.update(salt, 8);
-        sha256.digest(hash);
+        sha256.hashPasswordAndSalt(password, salt);
+        sha256.getHash(hash);
 
         uint64_t hash_prefix = *(uint64_t*)hash;
         
-        #pragma unroll 4
         for (int j = 0; j < num_target_hashes; j++) {
             if (hash_prefix == quick_check[j] && 
                 compareUint8Arrays(hash, target_hashes + j * 32, 32)) {
@@ -379,6 +354,10 @@ __global__ void find_passwords_optimized_multi(
         }
     }
 }
+
+
+
+
 
 
 
@@ -453,7 +432,6 @@ int main() {
             d_target_salts,
             d_target_hashes,
             num_hashes,
-            d_global_start_index,
             batch_size,
             lowest_unfound_index
         );
