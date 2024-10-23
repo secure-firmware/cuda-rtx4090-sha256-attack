@@ -2,8 +2,7 @@
 #include <iomanip>
 #include <sstream>
 #include <fstream>
-#include <cstring>
-#include <string.h>
+#include <string>
 #include <chrono>
 #include <cuda_runtime.h>
 #include <vector>
@@ -46,6 +45,25 @@ __constant__ static const uint32_t K[64] = {
 
 __constant__ char d_target_salt[16 + 1];
 __constant__ uint8_t d_target_hash[32];
+
+// Host-side equivalent of K for use in host functions
+static const uint32_t K_host[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+    0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+    0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+    0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+    0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+    0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+    0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
 
 // Custom device-compatible string copy function
 __device__ void cuda_strcpy(char *dest, const char *src, size_t max_length)
@@ -151,80 +169,6 @@ public:
         revert(hash);
     }
 
-    __device__ void transform_with_cached_message(uint32_t m0, uint32_t m1) {
-        uint32_t state[8];
-        
-        #pragma unroll 8
-        for (uint8_t i = 0; i < 8; i++) {
-            state[i] = m_state[i];
-        }
-
-        // First two rounds with variable message words
-        uint32_t maj = majority(state[0], state[1], state[2]);
-        uint32_t xorA = rotr(state[0], 2) ^ rotr(state[0], 13) ^ rotr(state[0], 22);
-        uint32_t ch = choose(state[4], state[5], state[6]);
-        uint32_t xorE = rotr(state[4], 6) ^ rotr(state[4], 11) ^ rotr(state[4], 25);
-        uint32_t sum = m0 + K[0] + state[7] + ch + xorE;
-        uint32_t newA = xorA + maj + sum;
-        uint32_t newE = state[3] + sum;
-
-        // Update state with first round
-        state[7] = state[6];
-        state[6] = state[5];
-        state[5] = state[4];
-        state[4] = newE;
-        state[3] = state[2];
-        state[2] = state[1];
-        state[1] = state[0];
-        state[0] = newA;
-
-        // Second round
-        maj = majority(state[0], state[1], state[2]);
-        xorA = rotr(state[0], 2) ^ rotr(state[0], 13) ^ rotr(state[0], 22);
-        ch = choose(state[4], state[5], state[6]);
-        xorE = rotr(state[4], 6) ^ rotr(state[4], 11) ^ rotr(state[4], 25);
-        sum = m1 + K[1] + state[7] + ch + xorE;
-        newA = xorA + maj + sum;
-        newE = state[3] + sum;
-
-        // Update state with second round
-        state[7] = state[6];
-        state[6] = state[5];
-        state[5] = state[4];
-        state[4] = newE;
-        state[3] = state[2];
-        state[2] = state[1];
-        state[1] = state[0];
-        state[0] = newA;
-
-        // Remaining rounds with constant zero message words
-        #pragma unroll 62
-        for (uint8_t i = 2; i < 64; i++) {
-            maj = majority(state[0], state[1], state[2]);
-            xorA = rotr(state[0], 2) ^ rotr(state[0], 13) ^ rotr(state[0], 22);
-            ch = choose(state[4], state[5], state[6]);
-            xorE = rotr(state[4], 6) ^ rotr(state[4], 11) ^ rotr(state[4], 25);
-            sum = K[i] + state[7] + ch + xorE;  // Message word is 0
-            newA = xorA + maj + sum;
-            newE = state[3] + sum;
-
-            state[7] = state[6];
-            state[6] = state[5];
-            state[5] = state[4];
-            state[4] = newE;
-            state[3] = state[2];
-            state[2] = state[1];
-            state[1] = state[0];
-            state[0] = newA;
-        }
-
-        #pragma unroll 8
-        for (uint8_t i = 0; i < 8; i++) {
-            m_state[i] += state[i];
-        }
-    }
-
-
 private:
     uint8_t m_data[64];
     uint32_t m_blocklen;
@@ -255,63 +199,69 @@ private:
         return rotr(x, 17) ^ rotr(x, 19) ^ (x >> 10);
     }
 
-    __device__ __host__ void transform() {
-        uint32_t m[64];
+    __device__ __host__ void transform()
+    {
+        uint32_t maj, xorA, ch, xorE, sum, newA, newE, m[64];
         uint32_t state[8];
 
+        #ifdef __CUDA_ARCH__
         const uint32_t *k_array = K;
+        #else
+        const uint32_t *k_array = K_host;
+        #endif
 
-
-        // Fast message schedule with minimal operations
+        // Unroll the first loop for processing the message schedule array
         #pragma unroll 16
-        for (uint8_t i = 0, j = 0; i < 16; i++, j += 4) {
+        for (uint8_t i = 0, j = 0; i < 16; i++, j += 4)
+        {
             m[i] = (m_data[j] << 24) | (m_data[j + 1] << 16) | (m_data[j + 2] << 8) | m_data[j + 3];
         }
 
-        // Optimized message expansion
+        // Unroll the second loop for the message schedule array
         #pragma unroll 48
-        for (uint8_t k = 16; k < 64; k++) {
+        for (uint8_t k = 16; k < 64; k++)
+        {
             m[k] = sig1(m[k - 2]) + m[k - 7] + sig0(m[k - 15]) + m[k - 16];
         }
 
-        // Load state into registers for faster access
+        // Initialize state array with the current hash values
         #pragma unroll 8
-        for (uint8_t i = 0; i < 8; i++) {
+        for (uint8_t i = 0; i < 8; i++)
+        {
             state[i] = m_state[i];
         }
 
-        // Main compression loop with minimal branching
+        // Main compression loop - fully unroll
         #pragma unroll 64
-        for (uint8_t i = 0; i < 64; i++) {
-            uint32_t maj = majority(state[0], state[1], state[2]);
-            uint32_t ch = choose(state[4], state[5], state[6]);
-            uint32_t sum1 = rotr(state[4], 6) ^ rotr(state[4], 11) ^ rotr(state[4], 25);
-            uint32_t sum0 = rotr(state[0], 2) ^ rotr(state[0], 13) ^ rotr(state[0], 22);
+        for (uint8_t i = 0; i < 64; i++)
+        {
+            maj = majority(state[0], state[1], state[2]);
+            xorA = rotr(state[0], 2) ^ rotr(state[0], 13) ^ rotr(state[0], 22);
 
-            state[7] += sum1 + ch + k_array[i] + m[i];
-            state[3] += state[7];
-            state[7] += sum0 + maj;
+            ch = choose(state[4], state[5], state[6]);
+            xorE = rotr(state[4], 6) ^ rotr(state[4], 11) ^ rotr(state[4], 25);
 
-            // Rotate state right by one position
-            uint32_t t = state[7];
+            sum = m[i] + k_array[i] + state[7] + ch + xorE;
+            newA = xorA + maj + sum;
+            newE = state[3] + sum;
+
             state[7] = state[6];
             state[6] = state[5];
             state[5] = state[4];
-            state[4] = state[3];
+            state[4] = newE;
             state[3] = state[2];
             state[2] = state[1];
             state[1] = state[0];
-            state[0] = t;
+            state[0] = newA;
         }
 
-        // Fast state update
+        // Add the compressed chunk to the current hash value
         #pragma unroll 8
-        for (uint8_t i = 0; i < 8; i++) {
+        for (uint8_t i = 0; i < 8; i++)
+        {
             m_state[i] += state[i];
         }
     }
-
-
 
     __device__ __host__ void pad()
     {
@@ -374,6 +324,7 @@ __device__ void computeHash(const char *password, const uint8_t *salt, uint8_t *
 __constant__ char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 const int charset_size = 62; // Length of charset
 const size_t password_length = 6;
+const size_t salt_length = 16;
 
 
 void hexToBytes(const char *hexString, uint8_t *byteArray)
@@ -619,56 +570,39 @@ void test_hash_match() {
 }
 
 __global__ void find_passwords_optimized_multi(
-    const uint8_t* __restrict__ salt,                
-    const uint8_t* __restrict__ target_hashes,    
-    int num_target_hashes,          
+    const uint8_t* salt,                
+    const uint8_t* target_hashes,    
+    int num_target_hashes,           
+    unsigned long long* global_start_index,   
     int batch_size,
     unsigned long long lowest_unfound_index  
 ) {
-    __shared__ uint8_t shared_salt[8];
-    
-    // Load salt into shared memory once per block
-    if (threadIdx.x < 8) {
-        shared_salt[threadIdx.x] = salt[threadIdx.x];
-    }
-    __syncthreads();
+    long long base_index = lowest_unfound_index + blockIdx.x * blockDim.x + threadIdx.x;
 
-    const long long base_index = lowest_unfound_index + blockIdx.x * blockDim.x + threadIdx.x;
-    
-    SHA256 sha256;
-    sha256.update(shared_salt, 8);
-    
-    #pragma unroll 4
     for (int i = 0; i < batch_size; i++) {
-        const long long idx = base_index + i * gridDim.x * blockDim.x;
+        long long idx = base_index + i * gridDim.x * blockDim.x;
         if (idx >= total_passwords) return;
 
-        char password[7];
+        char password[password_length + 1];
         generate_password(idx, password);
-        
-        // Only update first two message words with new password
-        uint32_t m0 = (password[0] << 24) | (password[1] << 16) | (password[2] << 8) | password[3];
-        uint32_t m1 = (password[4] << 24) | (password[5] << 16) | 0x8000;  // Include padding bit
-        
-        sha256.resetToSaltState();
-        sha256.transform_with_cached_message(m0, m1);
-        
+
         uint8_t hash[32];
+        SHA256 sha256;
+        sha256.update((const uint8_t*)password, password_length);
+        sha256.update(salt, 8);
         sha256.digest(hash);
 
         for (int j = 0; j < num_target_hashes; j++) {
             if (compareUint8Arrays(hash, target_hashes + j * 32, 32)) {
-                printf("%s[FOUND]%s Password: %s%s%s | Hash: %.2x%.2x%.2x... | Salt: %02x%02x%02x...\n",
-                    GREEN, RESET,
-                    BOLD, password, RESET,
+                // Print in format: hash:salt:password (index: xxx)
+                printf("%.2x%.2x%.2x...:%02x%02x%02x...:%s (index: %lld)\n", 
                     target_hashes[j * 32], target_hashes[j * 32 + 1], target_hashes[j * 32 + 2],
-                    shared_salt[0], shared_salt[1], shared_salt[2]);
-                __threadfence();
+                    salt[0], salt[1], salt[2],
+                    password, idx);
             }
         }
     }
 }
-
 
 
 
@@ -736,6 +670,7 @@ int main() {
             d_target_salts,
             d_target_hashes,
             num_hashes,
+            d_global_start_index,
             batch_size,
             lowest_unfound_index
         );
