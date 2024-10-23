@@ -1,98 +1,103 @@
-Hash 1: Password found at index 20424772274
-Hash 2: Password found at index 6440183777
-Hash 3: Password found at index 4987789696
-Hash 4: Password found at index 42084806208
-Hash 5: Password found at index 16607318383
-Hash 6: Password found at index 3913488727
-Hash 7: Password found at index 17764479192
-Hash 8: Password found at index 48365444836
-Hash 9: Password found at index 24458162873
-Hash 10: Password found at index 46231010270
-Hash 11: Password found at index 27443583341
-Hash 12: Password found at index 52325674069
-Hash 13: Password found at index 56733448094
-Hash 14: Password found at index 49344035444
-Hash 15: Password found at index 37195388652
-Hash 16: Password found at index 47742247342
-Hash 17: Password found at index 43577210599
-Hash 18: Password found at index 34867605476
-Hash 19: Password found at index 40273386964
-Hash 20: Password found at index 40103817088
-Hash 21: Password found at index 16635529968
-Hash 22: Password found at index 1931529183
-Hash 23: Password found at index 29178250001
-Hash 24: Password found at index 9711182048
-Hash 25: Password found at index 45703446476
-Hash 26: Password found at index 11090909898
-Hash 27: Password found at index 15943542887
-Hash 28: Password found at index 22975908077
-Hash 29: Password found at index 5368356710
-Hash 30: Password found at index 3526651422
-Hash 31: Password found at index 26325598323
-Hash 32: Password found at index 33841546277
-Hash 33: Password found at index 36084480784
-Hash 34: Password found at index 20104316204
-Hash 35: Password found at index 4574514418
-Hash 36: Password found at index 4757829695
-Hash 37: Password found at index 13506938925
-Hash 38: Password found at index 35854574993
-Hash 39: Password found at index 4178917345
-Hash 40: Password found at index 34153806060
-Hash 41: Password found at index 25535420172
-Hash 42: Password found at index 52255883192
-Hash 43: Password found at index 924290030
-Hash 44: Password found at index 48153105425
-Hash 45: Password found at index 54858681078
-Hash 46: Password found at index 441374574
-Hash 47: Password found at index 18614553059
-Hash 48: Password found at index 6699063095
-Hash 49: Password found at index 34598958316
-Hash 50: Password found at index 7766386835
-Hash 51: Password found at index 4308940344
-Hash 52: Password found at index 13606525941
-Hash 53: Password found at index 45084940458
-Hash 54: Password found at index 11349689186
-Hash 55: Password found at index 30712961763
-Hash 56: Password found at index 45202771646
-Hash 57: Password found at index 41230185320
-Hash 58: Password found at index 11690541938
-Hash 59: Password found at index 52255459382
-Hash 60: Password found at index 53596373187
-Hash 61: Password found at index 32414188941
-Hash 62: Password found at index 20769850646
-Hash 63: Password found at index 33498166128
-Hash 64: Password found at index 52460499399
-Hash 65: Password found at index 33654921102
-Hash 66: Password found at index 1092182087
-Hash 67: Password found at index 35878268756
-Hash 68: Password found at index 29476002436
-Hash 69: Password found at index 22345302022
-Hash 70: Password found at index 38768613028
-Hash 71: Password found at index 18387526257
-Hash 72: Password found at index 24494650815
-Hash 73: Password found at index 9910997485
-Hash 74: Password found at index 43963395187
-Hash 75: Password found at index 54715162885
-Hash 76: Password found at index 11767269552
-Hash 77: Password found at index 24094638227
-Hash 78: Password found at index 22728270323
-Hash 79: Password found at index 37352535452
-Hash 80: Password found at index 43007656078
-Hash 81: Password found at index 26135229596
-Hash 82: Password found at index 38539653794
-Hash 83: Password found at index 49623693812
-Hash 84: Password found at index 52183028951
-Hash 85: Password found at index 36686708217
-Hash 86: Password found at index 10869702439
-Hash 87: Password found at index 26076494085
-Hash 88: Password found at index 40194018459
-Hash 89: Password found at index 557970508
-Hash 90: Password found at index 43543063904
-Hash 91: Password found at index 34222320504
-Hash 92: Password found at index 8378020032
-Hash 93: Password found at index 54511929254
-Hash 94: Password found at index 39207868350
-Hash 95: Password found at index 36842363688
-Hash 96: Password found at index 11719527333
-Hash 97: Password found at index 44301122595
-Hash 98: Password found at index 9972719183
+user@8e1ab39e-2c9f-48ca-8615-068525f63617:~/solution$ ./password
+4b307a...:0e8b22...:UQ71Da (index: 441374574)
+c97ee2...:0e8b22...:uMlVLa (index: 557970508)
+c28af2...:0e8b22...:SdoIab (index: 924290030)
+7f1216...:0e8b22...:hCQ4lb (index: 1092182087)
+b93efd...:0e8b22...:F8ESgc (index: 1931529183)
+f67e72...:0e8b22...:IiDP0d (index: 3526651422)
+8a2b29...:0e8b22...:5lL0qe (index: 3913488727)
+b4e155...:0e8b22...:PstYIe (index: 4178917345)
+61e097...:0e8b22...:Yn2LRe (index: 4308940344)
+7a1a01...:0e8b22...:MkmK9e (index: 4574514418)
+8cd242...:0e8b22...:N0w9lf (index: 4757829695)
+607fed...:0e8b22...:46pIBf (index: 4987789696)
+d59cef...:0e8b22...:IYet1f (index: 5368356710)
+66c1c2...:0e8b22...:39v0bh (index: 6440183777)
+a0d38c...:0e8b22...:VuKwth (index: 6699063095)
+744ed2...:0e8b22...:X97KDi (index: 7766386835)
+912b37...:0e8b22...:wTt9ij (index: 8378020032)
+8fc696...:0e8b22...:GeinLk (index: 9711182048)
+7cd215...:0e8b22...:jmHTYk (index: 9910997485)
+f61046...:0e8b22...:zZF42k (index: 9972719183)
+846052...:0e8b22...:rjkM1l (index: 10869702439)
+9a0cee...:0e8b22...:GtuKgm (index: 11090909898)
+278260...:0e8b22...:aNigym (index: 11349689186)
+6cd5b9...:0e8b22...:zA6hXm (index: 11719527333)
+5333d1...:0e8b22...:caukVm (index: 11690541938)
+793e5e...:0e8b22...:mwqw0m (index: 11767269552)
+541aa6...:0e8b22...:NZTfUo (index: 13506938925)
+c6f82e...:0e8b22...:Z7KZ0o (index: 13606525941)
+5bd26d...:0e8b22...:HZD9yr (index: 15943542887)
+cb2c58...:0e8b22...:Er9Yjs (index: 16635529968)
+251f0d...:0e8b22...:5jM4hs (index: 16607318383)
+a4122a...:0e8b22...:6H6nyt (index: 17764479192)
+816a7a...:0e8b22...:jIlyeu (index: 18387526257)
+aa70d8...:0e8b22...:VKVUtu (index: 18614553059)
+56486c...:0e8b22...:KcPJ6v (index: 20104316204)
+bd624b...:0e8b22...:2sqqsw (index: 20424772274)
+8a1578...:0e8b22...:e7kMPw (index: 20769850646)
+ad10c6...:0e8b22...:iZLoyy (index: 22345302022)
+74f991...:0e8b22...:nxFjYy (index: 22728270323)
+0c66a6...:0e8b22...:HqJ4ez (index: 22975908077)
+c4b37e...:0e8b22...:nfOMsA (index: 24094638227)
+125b33...:0e8b22...:7B7nRA (index: 24458162873)
+8205de...:0e8b22...:jNdRTA (index: 24494650815)
+249e7d...:0e8b22...:Qrbi2B (index: 25535420172)
+4f7d6d...:0e8b22...:rutUCC (index: 26076494085)
+2f85e1...:0e8b22...:ohVSGC (index: 26135229596)
+b37eda...:0e8b22...:JSGLTC (index: 26325598323)
+200ad6...:0e8b22...:9QDq7D (index: 27443583341)
+d44688...:0e8b22...:FT7O0F (index: 29178250001)
+604e50...:0e8b22...:iUsYkG (index: 29476002436)
+349ae6...:0e8b22...:bxCGGH (index: 30712961763)
+d53c87...:0e8b22...:drNOxJ (index: 32414188941)
+ba7b02...:0e8b22...:eq3aJK (index: 33498166128)
+8f194b...:0e8b22...:gyMMTK (index: 33654921102)
+87b793...:0e8b22...:JhQp6K (index: 33841546277)
+409347...:0e8b22...:Qj3xrL (index: 34153806060)
+7b0783...:0e8b22...:w3wbwL (index: 34222320504)
+1b134a...:0e8b22...:WKRFVL (index: 34598958316)
+82942e...:0e8b22...:E94QdM (index: 34867605476)
+9ea775...:0e8b22...:P0iEiN (index: 35854574993)
+702132...:0e8b22...:iQIfkN (index: 35878268756)
+b4a040...:0e8b22...:K0XcyN (index: 36084480784)
+c10970...:0e8b22...:rSQXcO (index: 36686708217)
+32697e...:0e8b22...:yYXunO (index: 36842363688)
+2a50c1...:0e8b22...:ATdoLO (index: 37195388652)
+38246c...:0e8b22...:oXA1VO (index: 37352535452)
+54d19e...:0e8b22...:qFCmeQ (index: 38539653794)
+9609d0...:0e8b22...:iqjRtQ (index: 38768613028)
+76929b...:0e8b22...:yNnAXQ (index: 39207868350)
+b31295...:0e8b22...:EZGdWR (index: 40103817088)
+5751f3...:0e8b22...:tuak2R (index: 40194018459)
+2d5a18...:0e8b22...:ERbH7R (index: 40273386964)
+bd8158...:0e8b22...:cPOraT (index: 41230185320)
+2fbfc0...:0e8b22...:4KIh6T (index: 42084806208)
+47ce10...:0e8b22...:oaUJ6U (index: 43007656078)
+7e88c3...:0e8b22...:DjHhJV (index: 43577210599)
+0b6e76...:0e8b22...:ucqYGV (index: 43543063904)
+fba1b9...:0e8b22...:jz5p9V (index: 43963395187)
+c7891d...:0e8b22...:zT9gwW (index: 44301122595)
+ba0f52...:0e8b22...:aJYjnX (index: 45084940458)
+ec86da...:0e8b22...:c0nivX (index: 45202771646)
+636015...:0e8b22...:Goab3X (index: 45703446476)
+4a4745...:0e8b22...:8PLSCY (index: 46231010270)
+479f54...:0e8b22...:CDL9g0 (index: 47742247342)
+f3d42b...:0e8b22...:TAGXI0 (index: 48153105425)
+cbcefc...:0e8b22...:6LDkX0 (index: 48365444836)
+7ef9f1...:0e8b22...:ATHy11 (index: 49344035444)
+3db798...:0e8b22...:qO7tk2 (index: 49623693812)
+0bc9f6...:0e8b22...:rNPG74 (index: 52183028951)
+d154c0...:0e8b22...:QvwCc5 (index: 52255883192)
+c533c7...:0e8b22...:cgKAc5 (index: 52255459382)
+7236eb...:0e8b22...:9imlh5 (index: 52325674069)
+1b9338...:0e8b22...:fx4sq5 (index: 52460499399)
+2c0281...:0e8b22...:dc5kF6 (index: 53596373187)
+77c3b6...:0e8b22...:y9EiF7 (index: 54511929254)
+b772a2...:0e8b22...:lvp3S7 (index: 54715162885)
+fda550...:0e8b22...:U8AL27 (index: 54858681078)
+ff81c3...:0e8b22...:AGVD59 (index: 56733448094)
+
+Total time: 7.98 seconds
+Performance: 7.12 GH/s
+user@8e1ab39e-2c9f-48ca-8615-068525f63617:~/solution$

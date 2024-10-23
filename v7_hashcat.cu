@@ -594,15 +594,16 @@ __global__ void find_passwords_optimized_multi(
 
         for (int j = 0; j < num_target_hashes; j++) {
             if (compareUint8Arrays(hash, target_hashes + j * 32, 32)) {
-                // Print in hashcat format: hash:salt:password
-                printf("%.2x%.2x%.2x...:%02x%02x%02x...:%s\n", 
+                // Print in format: hash:salt:password (index: xxx)
+                printf("%.2x%.2x%.2x...:%02x%02x%02x...:%s (index: %lld)\n", 
                     target_hashes[j * 32], target_hashes[j * 32 + 1], target_hashes[j * 32 + 2],
                     salt[0], salt[1], salt[2],
-                    password);
+                    password, idx);
             }
         }
     }
 }
+
 
 
 
