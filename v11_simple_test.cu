@@ -332,6 +332,8 @@ __device__ bool compareUint8Arrays(const uint8_t* array1, const uint8_t* array2,
 }
 
 
+
+
 __global__ void find_passwords_optimized_multi(
     const uint8_t* __restrict__ salt,                
     const uint8_t* __restrict__ target_hashes,    
