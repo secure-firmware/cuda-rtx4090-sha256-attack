@@ -45,6 +45,43 @@ __constant__ static const uint32_t K[64] = {
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
     0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
 
+// Pre-computed constants for message schedule
+__constant__ static const uint32_t SALT_M[] = {
+    0x00000000,  // m[2]: salt[2-5]
+    0x80000000,  // m[3]: salt[6-7] + padding start (0x80)
+    0x00000000,  // m[4]: padding
+    0x00000000,  // m[5]: padding
+    0x00000000,  // m[6]: padding
+    0x00000000,  // m[7]: padding
+    0x00000000,  // m[8]: padding
+    0x00000000,  // m[9]: padding
+    0x00000000,  // m[10]: padding
+    0x00000000,  // m[11]: padding
+    0x00000000,  // m[12]: padding
+    0x00000000,  // m[13]: padding
+    0x00000000,  // m[14]: padding
+    0x00000070   // m[15]: length (112 bits)
+};
+
+// Pre-computed message schedule for constant portions
+__constant__ static const uint32_t PRESET_M[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+    0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+    0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+    0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+    0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+    0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+    0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+};
 
 // Define hash table structure
 #define HASH_TABLE_SIZE 4096
@@ -83,9 +120,6 @@ __device__ bool bloom_check(const uint8_t* hash) {
 
 class SHA256Optimized {
 private:
-    uint32_t m_state[8];
-    uint8_t m_data[64];  // Single block buffer - we never need more than one block
-
     // Constants specific to our case:
     // - 6 bytes password
     // - 8 bytes salt
@@ -95,75 +129,11 @@ private:
     //   * 1 byte 0x80 padding
     //   * 41 bytes of zero padding
     //   * 8 bytes for length (112 bits = 0x70)
-    static const uint64_t TOTAL_INPUT_BITS = 14 * 8;  // 112 bits
 
-    __device__ void transform() {
-        uint32_t m[64];
-        uint32_t state[8];
+    uint32_t m_state[8];
+    uint32_t m_password[2];  // Only store password portion that changes
 
-        // Load first 14 bytes (password + salt) into message schedule
-        // Only process the bytes we actually use
-        #pragma unroll 4
-        for(uint8_t i = 0; i < 4; i++) {
-            m[i] = (m_data[i*4] << 24) | (m_data[i*4 + 1] << 16) | 
-                   (m_data[i*4 + 2] << 8) | m_data[i*4 + 3];
-        }
-        
-        // Handle remaining 2 bytes of data + padding start
-        m[3] = (m_data[12] << 24) | (m_data[13] << 16) | (0x80 << 8) | 0x00;
-        
-        // Zero padding blocks - we know these are always zero
-        #pragma unroll 10
-        for(uint8_t i = 4; i < 14; i++) {
-            m[i] = 0;
-        }
-        
-        // Length goes in last two words
-        m[14] = 0;
-        m[15] = TOTAL_INPUT_BITS;
-
-        // Message schedule - only calculate what we need
-        #pragma unroll 48
-        for(uint8_t i = 16; i < 64; i++) {
-            m[i] = sig1(m[i-2]) + m[i-7] + sig0(m[i-15]) + m[i-16];
-        }
-
-        // Load state
-        #pragma unroll 8
-        for(uint8_t i = 0; i < 8; i++) {
-            state[i] = m_state[i];
-        }
-
-        // Main compression function - fully unrolled
-        #pragma unroll 64
-        for(uint8_t i = 0; i < 64; i++) {
-            uint32_t maj = majority(state[0], state[1], state[2]);
-            uint32_t xorA = rotr(state[0], 2) ^ rotr(state[0], 13) ^ rotr(state[0], 22);
-            uint32_t ch = choose(state[4], state[5], state[6]);
-            uint32_t xorE = rotr(state[4], 6) ^ rotr(state[4], 11) ^ rotr(state[4], 25);
-            
-            uint32_t sum = m[i] + K[i] + state[7] + ch + xorE;
-            uint32_t newA = xorA + maj + sum;
-            uint32_t newE = state[3] + sum;
-
-            state[7] = state[6];
-            state[6] = state[5];
-            state[5] = state[4];
-            state[4] = newE;
-            state[3] = state[2];
-            state[2] = state[1];
-            state[1] = state[0];
-            state[0] = newA;
-        }
-
-        // Add compressed chunk to hash value
-        #pragma unroll 8
-        for(uint8_t i = 0; i < 8; i++) {
-            m_state[i] += state[i];
-        }
-    }
-
-    // Retain only the necessary helper functions
+    // helper functions
     __device__ static uint32_t rotr(uint32_t x, uint32_t n) {
         return (x >> n) | (x << (32 - n));
     }
@@ -184,9 +154,75 @@ private:
         return rotr(x, 17) ^ rotr(x, 19) ^ (x >> 10);
     }
 
+    __device__ void transform() {
+        uint32_t m[64];
+        uint32_t state[8];
+
+        // Load password portion
+        m[0] = m_password[0];
+        m[1] = m_password[1];
+        
+        // Load constant salt and padding portion
+        #pragma unroll 14
+        for(int i = 0; i < 14; i++) {
+            m[i + 2] = SALT_M[i];
+        }
+
+        // Message schedule - only update parts affected by password
+        #pragma unroll 20
+        for(uint8_t i = 16; i < 36; i++) {
+            m[i] = sig1(m[i-2]) + m[i-7] + sig0(m[i-15]) + m[i-16];
+        }
+        
+        // Use pre-computed values for rest of schedule
+        #pragma unroll 28
+        for(uint8_t i = 36; i < 64; i++) {
+            m[i] = PRESET_M[i];
+        }
+
+        // Initialize state
+        #pragma unroll 8
+        for(uint8_t i = 0; i < 8; i++) {
+            state[i] = m_state[i];
+        }
+
+        // Main compression loop
+        uint32_t maj, xorA, ch, xorE, sum, newA, newE;
+        
+        #pragma unroll 64
+        for(uint8_t i = 0; i < 64; i++) {
+            maj = majority(state[0], state[1], state[2]);
+            xorA = rotr(state[0], 2) ^ rotr(state[0], 13) ^ rotr(state[0], 22);
+            ch = choose(state[4], state[5], state[6]);
+            xorE = rotr(state[4], 6) ^ rotr(state[4], 11) ^ rotr(state[4], 25);
+
+            sum = m[i] + K[i] + state[7] + ch + xorE;
+            newA = xorA + maj + sum;
+            newE = state[3] + sum;
+
+            state[7] = state[6];
+            state[6] = state[5];
+            state[5] = state[4];
+            state[4] = newE;
+            state[3] = state[2];
+            state[2] = state[1];
+            state[1] = state[0];
+            state[0] = newA;
+        }
+
+        // Update final state
+        #pragma unroll 8
+        for(uint8_t i = 0; i < 8; i++) {
+            m_state[i] += state[i];
+        }
+    }
+
 public:
     __device__ SHA256Optimized() {
-        // Initialize hash values
+        reset();
+    }
+
+    __device__ void reset() {
         m_state[0] = 0x6a09e667;
         m_state[1] = 0xbb67ae85;
         m_state[2] = 0x3c6ef372;
@@ -198,22 +234,16 @@ public:
     }
 
     __device__ void hashPasswordAndSalt(const char* password, const uint8_t* salt) {
-        // Copy password (6 bytes) and salt (8 bytes) directly
-        #pragma unroll 6
-        for(int i = 0; i < 6; i++) {
-            m_data[i] = password[i];
-        }
-        #pragma unroll 8
-        for(int i = 0; i < 8; i++) {
-            m_data[i + 6] = salt[i];
-        }
+        // Pack password and first 2 salt bytes directly into m_password
+        m_password[0] = (password[0] << 24) | (password[1] << 16) | 
+                       (password[2] << 8) | password[3];
+        m_password[1] = (password[4] << 24) | (password[5] << 16) | 
+                       (salt[0] << 8) | salt[1];
         
-        // Single transform handles everything
         transform();
     }
 
     __device__ void getHash(uint8_t* hash) {
-        // Convert hash to bytes (big endian)
         #pragma unroll 8
         for(uint8_t i = 0; i < 8; i++) {
             hash[i*4] = (m_state[i] >> 24) & 0xFF;
@@ -324,6 +354,12 @@ __global__ void find_passwords_optimized_multi(
     }
     __syncthreads();
 
+    if(base_index == 0)
+    {
+        //eb635a43889975acd972e881ef10b6e09aefa82bf393c7a5608406bb09018dc3:0e8b22dfc589e87a:1e4HTu
+        char test_password[7] = "1e4HTu";  // Example password
+        debugHash(test_password, salt);
+    }
 
     SHA256Optimized sha256;
     

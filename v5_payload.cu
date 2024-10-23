@@ -671,7 +671,7 @@ int main() {
 
     while (lowest_unfound_index < total_passwords) {
         find_passwords_optimized_multi<<<numBlocks, blockSize>>>(
-            d_salt,
+            (const uint8_t*)d_salt,  // Cast to correct type
             d_target_hashes,
             num_hashes,
             d_found_flags,
