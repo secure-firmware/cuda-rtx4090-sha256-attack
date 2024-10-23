@@ -359,65 +359,58 @@ __global__ void find_passwords_optimized_multi(
     int* found_flags,                
     long long* result_indices,       
     unsigned long long* global_start_index,   
-    int batch_size                  
+    int batch_size,
+    unsigned long long lowest_unfound_index  
 ) {
-    // Shared memory for target hashes and salt state
-    __shared__ uint8_t shared_target_hashes[32 * MAX_TARGETS];
+    // Shared memory for storing the initial SHA256 state with salt
     __shared__ SHA256 shared_sha256;
 
-    // Load target hashes into shared memory
-    if (threadIdx.x < num_target_hashes) {
-        for (int i = 0; i < 32; i++) {
-            shared_target_hashes[threadIdx.x * 32 + i] = target_hashes[threadIdx.x * 32 + i];
-        }
-    }
-
-    // Initialize salt state once per block
+    // Initialize the SHA256 state with salt (only first thread in block)
     if (threadIdx.x == 0) {
         shared_sha256.initWithSalt((const uint8_t*)salt, salt_length);
     }
 
-    __syncthreads();
+    __syncthreads(); // Ensure all threads have access to initialized shared memory
 
-    // Get batch of passwords for this thread
-    long long thread_start_index = atomicAdd(global_start_index, (unsigned long long)batch_size);
-    uint8_t hash[32];
+    // Get the starting index for this thread's batch of passwords
+    long long thread_start_index = atomicAdd((unsigned long long*)global_start_index, (unsigned long long)batch_size);
+    
+    // Skip if below lowest_unfound_index
+    if (thread_start_index < lowest_unfound_index) {
+        thread_start_index = lowest_unfound_index;
+    }
+    
+    uint8_t hash[32]; // Buffer to store computed hash
+
+    // Initialize SHA256 object for this thread
     SHA256 sha256 = shared_sha256;
 
-    // Process passwords in batch
-    #pragma unroll 4
+    // Process batch_size number of passwords
     for (int i = 0; i < batch_size; i++) {
         long long idx = thread_start_index + i;
         
-        // Generate and hash password
+        // Generate password for this index
         char password[password_length + 1];
         generate_password(idx, password);
-        
+
+        // Compute hash for the password
         sha256.resetToSaltState();
         sha256.update((const uint8_t*)password, password_length);
         sha256.digest(hash);
 
-        // Quick compare first 8 bytes before full comparison
-        const uint2* quick_hash = (const uint2*)hash;
-        
-        // Check against all target hashes
+        // Compare with all target hashes
         for (int j = 0; j < num_target_hashes; j++) {
-            if (!found_flags[j]) {
-                const uint2* quick_target = (const uint2*)&shared_target_hashes[j * 32];
-                if (quick_hash[0].x == quick_target[0].x && 
-                    quick_hash[0].y == quick_target[0].y) {
-                    // Full comparison only if quick check passes
-                    if (compareUint8Arrays(hash, &shared_target_hashes[j * 32], 32)) {
-                        int old = atomicExch(&found_flags[j], 1);
-                        if (old == 0) {
-                            result_indices[j] = idx;
-                        }
-                    }
+            if (!found_flags[j] && compareUint8Arrays(hash, target_hashes + j * 32, 32)) {
+                // Atomically set the found flag and store the result index
+                int old = atomicExch(&found_flags[j], 1);
+                if (old == 0) {
+                    result_indices[j] = idx;
                 }
             }
         }
     }
 }
+
 
 
 __device__ int cuda_strcmp(const char* str1, const char* str2) {
