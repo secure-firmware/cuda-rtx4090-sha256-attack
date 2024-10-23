@@ -151,80 +151,6 @@ public:
         revert(hash);
     }
 
-    __device__ void transform_with_cached_message(uint32_t m0, uint32_t m1) {
-        uint32_t state[8];
-        
-        #pragma unroll 8
-        for (uint8_t i = 0; i < 8; i++) {
-            state[i] = m_state[i];
-        }
-
-        // First two rounds with variable message words
-        uint32_t maj = majority(state[0], state[1], state[2]);
-        uint32_t xorA = rotr(state[0], 2) ^ rotr(state[0], 13) ^ rotr(state[0], 22);
-        uint32_t ch = choose(state[4], state[5], state[6]);
-        uint32_t xorE = rotr(state[4], 6) ^ rotr(state[4], 11) ^ rotr(state[4], 25);
-        uint32_t sum = m0 + K[0] + state[7] + ch + xorE;
-        uint32_t newA = xorA + maj + sum;
-        uint32_t newE = state[3] + sum;
-
-        // Update state with first round
-        state[7] = state[6];
-        state[6] = state[5];
-        state[5] = state[4];
-        state[4] = newE;
-        state[3] = state[2];
-        state[2] = state[1];
-        state[1] = state[0];
-        state[0] = newA;
-
-        // Second round
-        maj = majority(state[0], state[1], state[2]);
-        xorA = rotr(state[0], 2) ^ rotr(state[0], 13) ^ rotr(state[0], 22);
-        ch = choose(state[4], state[5], state[6]);
-        xorE = rotr(state[4], 6) ^ rotr(state[4], 11) ^ rotr(state[4], 25);
-        sum = m1 + K[1] + state[7] + ch + xorE;
-        newA = xorA + maj + sum;
-        newE = state[3] + sum;
-
-        // Update state with second round
-        state[7] = state[6];
-        state[6] = state[5];
-        state[5] = state[4];
-        state[4] = newE;
-        state[3] = state[2];
-        state[2] = state[1];
-        state[1] = state[0];
-        state[0] = newA;
-
-        // Remaining rounds with constant zero message words
-        #pragma unroll 62
-        for (uint8_t i = 2; i < 64; i++) {
-            maj = majority(state[0], state[1], state[2]);
-            xorA = rotr(state[0], 2) ^ rotr(state[0], 13) ^ rotr(state[0], 22);
-            ch = choose(state[4], state[5], state[6]);
-            xorE = rotr(state[4], 6) ^ rotr(state[4], 11) ^ rotr(state[4], 25);
-            sum = K[i] + state[7] + ch + xorE;  // Message word is 0
-            newA = xorA + maj + sum;
-            newE = state[3] + sum;
-
-            state[7] = state[6];
-            state[6] = state[5];
-            state[5] = state[4];
-            state[4] = newE;
-            state[3] = state[2];
-            state[2] = state[1];
-            state[1] = state[0];
-            state[0] = newA;
-        }
-
-        #pragma unroll 8
-        for (uint8_t i = 0; i < 8; i++) {
-            m_state[i] += state[i];
-        }
-    }
-
-
 private:
     uint8_t m_data[64];
     uint32_t m_blocklen;
@@ -632,12 +558,15 @@ __global__ void find_passwords_optimized_multi(
         shared_salt[threadIdx.x] = salt[threadIdx.x];
     }
     __syncthreads();
-
+    
+    // Calculate base index for this thread
     const long long base_index = lowest_unfound_index + blockIdx.x * blockDim.x + threadIdx.x;
     
+    // Pre-initialize SHA256 with salt
     SHA256 sha256;
     sha256.update(shared_salt, 8);
     
+    // Process multiple passwords per thread
     #pragma unroll 4
     for (int i = 0; i < batch_size; i++) {
         const long long idx = base_index + i * gridDim.x * blockDim.x;
@@ -646,30 +575,25 @@ __global__ void find_passwords_optimized_multi(
         char password[7];
         generate_password(idx, password);
         
-        // Only update first two message words with new password
-        uint32_t m0 = (password[0] << 24) | (password[1] << 16) | (password[2] << 8) | password[3];
-        uint32_t m1 = (password[4] << 24) | (password[5] << 16) | 0x8000;  // Include padding bit
-        
+        // Reset SHA256 state to after-salt state and update with password
         sha256.resetToSaltState();
-        sha256.transform_with_cached_message(m0, m1);
+        sha256.update((const uint8_t*)password, 6);
         
         uint8_t hash[32];
         sha256.digest(hash);
 
+        // Warp-synchronized hash comparison
+        #pragma unroll 4
         for (int j = 0; j < num_target_hashes; j++) {
             if (compareUint8Arrays(hash, target_hashes + j * 32, 32)) {
-                printf("%s[FOUND]%s Password: %s%s%s | Hash: %.2x%.2x%.2x... | Salt: %02x%02x%02x...\n",
-                    GREEN, RESET,
-                    BOLD, password, RESET,
+                printf("%.2x%.2x%.2x...:%02x%02x%02x...:%s (index: %lld)\n",
                     target_hashes[j * 32], target_hashes[j * 32 + 1], target_hashes[j * 32 + 2],
-                    shared_salt[0], shared_salt[1], shared_salt[2]);
-                __threadfence();
+                    shared_salt[0], shared_salt[1], shared_salt[2],
+                    password, idx);
             }
         }
     }
 }
-
-
 
 
 
