@@ -577,32 +577,85 @@ __global__ void find_passwords_optimized_multi(
     int batch_size,
     unsigned long long lowest_unfound_index  
 ) {
-    long long base_index = lowest_unfound_index + blockIdx.x * blockDim.x + threadIdx.x;
+    __shared__ uint8_t shared_salt[8];
+    __shared__ uint8_t shared_target_hashes[32 * 8];
+    
+    if (threadIdx.x < 8) {
+        shared_salt[threadIdx.x] = salt[threadIdx.x];
+    }
+    
+    if (threadIdx.x < 256) {
+        shared_target_hashes[threadIdx.x] = target_hashes[threadIdx.x];
+    }
+    __syncthreads();
 
+    long long base_index = lowest_unfound_index + blockIdx.x * blockDim.x + threadIdx.x;
+    
+    #pragma unroll 4
     for (int i = 0; i < batch_size; i++) {
         long long idx = base_index + i * gridDim.x * blockDim.x;
         if (idx >= total_passwords) return;
 
-        char password[password_length + 1];
-        generate_password(idx, password);
-
+        char password[6];
         uint8_t hash[32];
         SHA256 sha256;
+        
+        register long long temp_idx = idx;
+        #pragma unroll
+        for (int k = 0; k < password_length; k++) {
+            password[k] = charset[temp_idx % charset_size];
+            temp_idx /= charset_size;
+        }
+
         sha256.update((const uint8_t*)password, password_length);
-        sha256.update(salt, 8);
+        sha256.update(shared_salt, 8);
         sha256.digest(hash);
 
-        for (int j = 0; j < num_target_hashes; j++) {
-            if (compareUint8Arrays(hash, target_hashes + j * 32, 32)) {
-                // Print in format: hash:salt:password (index: xxx)
-                printf("%.2x%.2x%.2x...:%02x%02x%02x...:%s (index: %lld)\n", 
-                    target_hashes[j * 32], target_hashes[j * 32 + 1], target_hashes[j * 32 + 2],
-                    salt[0], salt[1], salt[2],
-                    password, idx);
+        #pragma unroll 8
+        for (int j = 0; j < min(8, num_target_hashes); j++) {
+            const uint8_t* target = shared_target_hashes + j * 32;
+            bool match = true;
+            
+            uint4* hash_vec = (uint4*)hash;
+            uint4* target_vec = (uint4*)target;
+            
+            #pragma unroll 2
+            for (int v = 0; v < 2; v++) {
+                if (hash_vec[v].x != target_vec[v].x || 
+                    hash_vec[v].y != target_vec[v].y ||
+                    hash_vec[v].z != target_vec[v].z ||
+                    hash_vec[v].w != target_vec[v].w) {
+                    match = false;
+                    break;
+                }
+            }
+
+            if (__any_sync(__activemask(), match)) {
+                if (match) {
+                    printf("%.2x%.2x%.2x...:%02x%02x%02x...:%s (index: %lld)\n", 
+                        target[0], target[1], target[2],
+                        shared_salt[0], shared_salt[1], shared_salt[2],
+                        password, idx);
+                }
+            }
+        }
+
+        // Handle remaining hashes if num_target_hashes > 8
+        if (num_target_hashes > 8) {
+            #pragma unroll 4
+            for (int j = 8; j < num_target_hashes; j++) {
+                const uint8_t* target = target_hashes + j * 32;
+                if (compareUint8Arrays(hash, target, 32)) {
+                    printf("%.2x%.2x%.2x...:%02x%02x%02x...:%s (index: %lld)\n", 
+                        target[0], target[1], target[2],
+                        salt[0], salt[1], salt[2],
+                        password, idx);
+                }
             }
         }
     }
 }
+
 
 
 
