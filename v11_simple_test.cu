@@ -333,8 +333,8 @@ __device__ bool compareUint8Arrays(const uint8_t* array1, const uint8_t* array2,
 
 
 __global__ void find_passwords_optimized_multi(
-    const uint8_t* salt,                
-    const uint8_t* target_hashes,    
+    const uint8_t* __restrict__ salt,                
+    const uint8_t* __restrict__ target_hashes,    
     int num_target_hashes,           
     unsigned long long* global_start_index,   
     int batch_size,
@@ -342,10 +342,10 @@ __global__ void find_passwords_optimized_multi(
 ) {
     long long base_index = lowest_unfound_index + blockIdx.x * blockDim.x + threadIdx.x;
     
-    // Use first 64 bits of hash as quick filter
+    // Quick prefix check using shared memory
     __shared__ uint64_t quick_check[256];
     if (threadIdx.x < num_target_hashes) {
-        quick_check[threadIdx.x] = *(uint64_t*)(target_hashes + threadIdx.x * 32);
+        quick_check[threadIdx.x] = *(const uint64_t*)(target_hashes + threadIdx.x * 32);
     }
     __syncthreads();
 
@@ -363,14 +363,23 @@ __global__ void find_passwords_optimized_multi(
         sha256.digest(hash);
 
         uint64_t hash_prefix = *(uint64_t*)hash;
+        
+        #pragma unroll 4
         for (int j = 0; j < num_target_hashes; j++) {
             if (hash_prefix == quick_check[j] && 
                 compareUint8Arrays(hash, target_hashes + j * 32, 32)) {
-                printf(BOLD GREEN "Found: %s (idx: %lld)\n" RESET, password, idx);
+                printf(BOLD GREEN "Found: %s (idx: %lld)\n" RESET
+                       "Hash: %.2x%.2x%.2x... Salt: %02x%02x%02x...\n",
+                       password, idx,
+                       target_hashes[j * 32],
+                       target_hashes[j * 32 + 1],
+                       target_hashes[j * 32 + 2],
+                       salt[0], salt[1], salt[2]);
             }
         }
     }
 }
+
 
 
 
