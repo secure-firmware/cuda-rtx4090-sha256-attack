@@ -332,8 +332,6 @@ __device__ bool compareUint8Arrays(const uint8_t* array1, const uint8_t* array2,
 }
 
 
-
-
 __global__ void find_passwords_optimized_multi(
     const uint8_t* __restrict__ salt,                
     const uint8_t* __restrict__ target_hashes,    
@@ -440,9 +438,12 @@ int main() {
     cudaMemcpy(d_target_salts, all_target_salts, num_hashes * 8, cudaMemcpyHostToDevice);
     cudaMemcpy(d_target_hashes, all_target_hashes, num_hashes * 32, cudaMemcpyHostToDevice);
 
-    int blockSize = 128;
-    int batch_size = 100;
-    int numBlocks = numSMs * 32;
+    // int blockSize = 128;
+    // int batch_size = 100;
+    // int numBlocks = numSMs * 32;
+    int blockSize = 512;  // Match hashcat's 512 threads
+    int numBlocks = 8192;  // Use acceleration factor of 4
+    int batch_size = 400;  // Match loop size
     unsigned long long lowest_unfound_index = 0;
 
     auto start_time = std::chrono::high_resolution_clock::now();
