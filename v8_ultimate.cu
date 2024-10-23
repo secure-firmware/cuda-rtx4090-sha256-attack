@@ -10,9 +10,18 @@
 #include <fstream>
 #include <vector>
 #include <string>
-#include <cstring>
 
-// Constants
+// Color definitions
+#define RED     "\033[31m"
+#define GREEN   "\033[32m"
+#define YELLOW  "\033[33m"
+#define BLUE    "\033[34m"
+#define MAGENTA "\033[35m"
+#define CYAN    "\033[36m"
+#define RESET   "\033[0m"
+#define BOLD    "\033[1m"
+
+// Optimization constants
 #define WARP_SIZE 32
 #define BLOCK_SIZE 256
 #define BATCH_SIZE 1024
@@ -22,7 +31,6 @@
 __constant__ char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 __constant__ const int charset_size = 62;
 __constant__ const unsigned long long total_passwords = 62ULL * 62 * 62 * 62 * 62 * 62;
-__constant__ cudaTextureObject_t d_tex_target_hashes;
 
 // SHA-256 constants
 __constant__ static const uint32_t K[64] = {
@@ -44,13 +52,18 @@ __constant__ static const uint32_t K[64] = {
     0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 };
 
-// Device constants for initial SHA-256 state
+// Initial hash state
 __constant__ uint32_t d_initial_state[8] = {
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
     0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
 };
 
-// SHA-256 implementation
+// Texture reference for target hashes
+// At global scope
+__constant__ cudaTextureObject_t d_tex_target_hashes;
+
+
+// Optimized SHA-256 implementation with vectorized operations
 class SHA256_Optimized {
 private:
     __device__ __forceinline__ static uint32_t rotr(uint32_t x, uint32_t n) {
@@ -132,7 +145,7 @@ public:
     }
 };
 
-// Utility functions
+// Vector comparison utilities
 __device__ __forceinline__ bool compare_hash_simd(const uint8_t* hash, const uint8_t* target) {
     const uint4* hash_vec = (const uint4*)hash;
     const uint4* target_vec = (const uint4*)target;
@@ -145,6 +158,7 @@ __device__ __forceinline__ bool compare_hash_simd(const uint8_t* hash, const uin
     return !(diff.x | diff.y | diff.z | diff.w);
 }
 
+// Password generation with vectorized operations
 __device__ __forceinline__ void generate_password_vectorized(unsigned long long idx, char* password) {
     uint32_t quotients[6];
     #pragma unroll
@@ -166,36 +180,38 @@ __device__ __forceinline__ unsigned long long get_work_range(
     unsigned long long* global_counter,
     const unsigned long long work_size
 ) {
-    const unsigned int lane_id = threadIdx.x % WARP_SIZE;
-    const unsigned int warp_id = threadIdx.x / WARP_SIZE;
+    unsigned int lane_id = threadIdx.x % WARP_SIZE;
+    unsigned int warp_id = threadIdx.x / WARP_SIZE;
     
-    __shared__ unsigned long long warp_base[32];
+    __shared__ unsigned long long warp_offsets[32];
     
     if (lane_id == 0) {
-        warp_base[warp_id] = atomicAdd(global_counter, WARP_SIZE * work_size);
+        warp_offsets[warp_id] = atomicAdd(global_counter, work_size * 32);
     }
-    return __shfl_sync(0xffffffff, warp_base[warp_id], 0) + lane_id * work_size;
+    return __shfl_sync(0xffffffff, warp_offsets[warp_id], 0) + lane_id * work_size;
 }
 
-void hexToBytes(const char* hexString, uint8_t* byteArray) {
+void hexToBytes(const char *hexString, uint8_t *byteArray) {
     for (size_t i = 0; i < 32; ++i) {
         sscanf(hexString + 2 * i, "%2hhx", &byteArray[i]);
     }
 }
 
-// Main kernel
+// Main cracking kernel
 __global__ void crack_passwords_ultimate(
     const uint8_t* salt,
     int num_target_hashes,
     unsigned long long* global_counter
 ) {
     __shared__ uint32_t shared_salt[2];
+    __shared__ uint32_t shared_hashes[BLOCK_SIZE][8];
     
     if (threadIdx.x < 2) {
         shared_salt[threadIdx.x] = ((uint32_t*)salt)[threadIdx.x];
     }
     __syncthreads();
     
+    const int warp_id = threadIdx.x / WARP_SIZE;
     const int lane_id = threadIdx.x % WARP_SIZE;
     
     while (true) {
@@ -224,50 +240,56 @@ __global__ void crack_passwords_ultimate(
                         hash_state[0], shared_salt[0], password, idx);
                 }
             }
+
         }
     }
 }
 
 int main() {
+    // Add CUDA error checking macro
+    #define CUDA_CHECK(call) { cudaError_t err = call; if (err != cudaSuccess) { printf("CUDA error: %s\n", cudaGetErrorString(err)); return 1; } }
+
+    // Get device properties
     cudaDeviceProp prop;
-    cudaGetDeviceProperties(&prop, 0);
+    CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
     const int numSMs = prop.multiProcessorCount;
     
+    // Load input hashes with file check
+    std::ifstream infile("in.txt");
+    if (!infile.is_open()) {
+        printf("Failed to open in.txt\n");
+        return 1;
+    }
+
     const int MAX_HASHES = 100;
     struct HashPair {
         char salt[17];
         char hash[65];
     };
-    
     std::vector<HashPair> all_hashes;
     all_hashes.reserve(MAX_HASHES);
     
-    std::ifstream infile("in.txt");
-    if (!infile.is_open()) {
-        printf("Error: Cannot open in.txt\n");
-        return 1;
-    }
-    
     std::string line;
     int num_hashes = 0;
-    
     while (std::getline(infile, line) && num_hashes < MAX_HASHES) {
-        if (line.length() >= 81) {
-            HashPair pair;
-            std::memcpy(pair.hash, line.substr(0, 64).c_str(), 64);
-            std::memcpy(pair.salt, line.substr(65, 16).c_str(), 16);
-            pair.hash[64] = '\0';
-            pair.salt[16] = '\0';
-            all_hashes.push_back(pair);
-            num_hashes++;
-        }
+        if (line.length() < 81) continue; // Skip invalid lines
+        
+        HashPair pair;
+        strncpy(pair.hash, line.substr(0, 64).c_str(), 64);
+        strncpy(pair.salt, line.substr(65, 16).c_str(), 16);
+        pair.hash[64] = '\0';
+        pair.salt[16] = '\0';
+        
+        all_hashes.push_back(pair);
+        num_hashes++;
     }
-    
+
     if (num_hashes == 0) {
-        printf("Error: No valid hashes found\n");
+        printf("No valid hashes found in input file\n");
         return 1;
     }
 
+    // Rest of the implementation remains the same, but add CUDA_CHECK for all CUDA calls
     const size_t salt_buffer_size = num_hashes * 8;
     const size_t hash_buffer_size = num_hashes * 32;
 
@@ -275,24 +297,27 @@ int main() {
     uint8_t *d_target_hashes = nullptr;
     unsigned long long *d_global_counter = nullptr;
 
-    cudaMalloc(&d_target_salts, salt_buffer_size);
-    cudaMalloc(&d_target_hashes, hash_buffer_size);
-    cudaMalloc(&d_global_counter, sizeof(unsigned long long));
-
+    CUDA_CHECK(cudaMalloc(&d_target_salts, salt_buffer_size));
+    CUDA_CHECK(cudaMalloc(&d_target_hashes, hash_buffer_size));
+    CUDA_CHECK(cudaMalloc(&d_global_counter, sizeof(unsigned long long)));
+    
+    // Initialize counter
     unsigned long long init_counter = 0;
     cudaMemcpy(d_global_counter, &init_counter, sizeof(unsigned long long), cudaMemcpyHostToDevice);
-
+    
+    // Convert and copy data to device
     std::vector<uint8_t> target_hashes(hash_buffer_size);
     std::vector<uint8_t> target_salts(salt_buffer_size);
-
+    
     for (int i = 0; i < num_hashes; i++) {
         hexToBytes(all_hashes[i].hash, &target_hashes[i * 32]);
         hexToBytes(all_hashes[i].salt, &target_salts[i * 8]);
     }
-
+    
     cudaMemcpy(d_target_salts, target_salts.data(), salt_buffer_size, cudaMemcpyHostToDevice);
     cudaMemcpy(d_target_hashes, target_hashes.data(), hash_buffer_size, cudaMemcpyHostToDevice);
-
+    
+    // Create texture object
     cudaResourceDesc resDesc = {};
     resDesc.resType = cudaResourceTypeLinear;
     resDesc.res.linear.devPtr = d_target_hashes;
@@ -306,31 +331,36 @@ int main() {
     cudaTextureObject_t tex_target_hashes;
     cudaCreateTextureObject(&tex_target_hashes, &resDesc, &texDesc, nullptr);
     cudaMemcpyToSymbol(d_tex_target_hashes, &tex_target_hashes, sizeof(cudaTextureObject_t));
-
+    
+    // Launch configuration
     const int blockSize = BLOCK_SIZE;
     const int numBlocks = numSMs * STREAMS_PER_BLOCK;
-
+    
+    // Start timer
     auto start_time = std::chrono::high_resolution_clock::now();
-
+    
+    // Launch kernel
     crack_passwords_ultimate<<<numBlocks, blockSize>>>(
         d_target_salts,
         num_hashes,
         d_global_counter
     );
-
+    
     cudaDeviceSynchronize();
-
+    
+    // Calculate and print performance metrics
     auto end_time = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> elapsed_seconds = end_time - start_time;
     double speed = total_passwords / elapsed_seconds.count() / 1e9;
-
+    
     printf("\nTotal time: %.2f seconds\n", elapsed_seconds.count());
     printf("Speed: %.2f GH/s\n", speed);
-
+    
+    // Cleanup
     cudaDestroyTextureObject(tex_target_hashes);
     cudaFree(d_target_salts);
     cudaFree(d_target_hashes);
     cudaFree(d_global_counter);
-
+    
     return 0;
 }
