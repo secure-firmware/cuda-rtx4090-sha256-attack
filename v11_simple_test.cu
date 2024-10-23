@@ -59,6 +59,28 @@ __device__ uint32_t calculate_hash_index(const uint8_t* hash) {
     return index % HASH_TABLE_SIZE;
 }
 
+// Add at top of file
+#define BLOOM_SIZE 1024
+#define BLOOM_HASHES 2
+
+// Add device-side Bloom filter
+__device__ uint32_t bloom_filter[BLOOM_SIZE];
+
+// Add Bloom filter functions
+__device__ void bloom_add(const uint8_t* hash) {
+    uint32_t h1 = calculate_hash_index(hash);
+    uint32_t h2 = calculate_hash_index(hash + 16);
+    atomicOr(&bloom_filter[h1 % BLOOM_SIZE], 1U << (h1 & 31));
+    atomicOr(&bloom_filter[h2 % BLOOM_SIZE], 1U << (h2 & 31));
+}
+
+__device__ bool bloom_check(const uint8_t* hash) {
+    uint32_t h1 = calculate_hash_index(hash);
+    uint32_t h2 = calculate_hash_index(hash + 16);
+    return (bloom_filter[h1 % BLOOM_SIZE] & (1U << (h1 & 31))) &&
+           (bloom_filter[h2 % BLOOM_SIZE] & (1U << (h2 & 31)));
+}
+
 class SHA256
 {
 public:
@@ -319,14 +341,11 @@ __global__ void find_passwords_optimized_multi(
     unsigned long long lowest_unfound_index  
 ) {
     long long base_index = lowest_unfound_index + blockIdx.x * blockDim.x + threadIdx.x;
-
-    // Initialize hash table in shared memory for this block
-    __shared__ uint32_t shared_hash_table[HASH_TABLE_SIZE];
-    if (threadIdx.x == 0) {
-        for (int i = 0; i < num_target_hashes; i++) {
-            uint32_t hash_idx = calculate_hash_index(target_hashes + i * 32);
-            shared_hash_table[hash_idx] = i + 1; // Store 1-based index
-        }
+    
+    // Use first 64 bits of hash as quick filter
+    __shared__ uint64_t quick_check[256];
+    if (threadIdx.x < num_target_hashes) {
+        quick_check[threadIdx.x] = *(uint64_t*)(target_hashes + threadIdx.x * 32);
     }
     __syncthreads();
 
@@ -343,21 +362,17 @@ __global__ void find_passwords_optimized_multi(
         sha256.update(salt, 8);
         sha256.digest(hash);
 
-        uint32_t hash_idx = calculate_hash_index(hash);
-        if (shared_hash_table[hash_idx] > 0) {
-            uint32_t target_idx = shared_hash_table[hash_idx] - 1;
-            if (compareUint8Arrays(hash, target_hashes + target_idx * 32, 32)) {
-                printf(BOLD GREEN "Match found: " RESET "%s (idx: %lld)\n"
-                       "Hash: %.2x%.2x%.2x... Salt: %02x%02x%02x...\n",
-                       password, idx,
-                       target_hashes[target_idx * 32], 
-                       target_hashes[target_idx * 32 + 1],
-                       target_hashes[target_idx * 32 + 2],
-                       salt[0], salt[1], salt[2]);
+        uint64_t hash_prefix = *(uint64_t*)hash;
+        for (int j = 0; j < num_target_hashes; j++) {
+            if (hash_prefix == quick_check[j] && 
+                compareUint8Arrays(hash, target_hashes + j * 32, 32)) {
+                printf(BOLD GREEN "Found: %s (idx: %lld)\n" RESET, password, idx);
             }
         }
     }
 }
+
+
 
 
 
