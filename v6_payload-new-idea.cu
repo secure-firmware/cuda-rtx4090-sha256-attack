@@ -428,15 +428,6 @@ __device__ int cuda_strcmp(const char* str1, const char* str2) {
     return *(const unsigned char*)str1 - *(const unsigned char*)str2;
 }
 
-void host_generate_password(long long idx, char *password)
-{
-    for (int i = 0; i < password_length; ++i)
-    {
-        password[i] = charset[idx % charset_size];
-        idx /= charset_size;
-    }
-    password[password_length] = '\0'; // Null-terminate the string
-}
 
 //Test Code
 void test_specific_case() {
@@ -686,10 +677,6 @@ int main() {
         // Print results with colors
         if (found) {
             printf("\033[1;32m✓ Password found at index: %lld\033[0m\n", result_index); // Bright green
-            // Generate and display the actual password
-            char found_password[password_length + 1];
-            host_generate_password(result_index, found_password);
-            printf("\033[1;36m▶ Found password: %s\033[0m\n", found_password); // Bright cyan
         } else {
             printf("\033[1;31m✗ Password not found\033[0m\n"); // Bright red
         }
