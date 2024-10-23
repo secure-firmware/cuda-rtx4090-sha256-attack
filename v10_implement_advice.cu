@@ -571,7 +571,17 @@ void test_hash_match() {
 
 
 
-__device__ unsigned int found_count = 0;
+// Device storage for results
+struct PasswordMatch {
+    char password[7];
+    uint32_t hash_index;
+    unsigned long long password_index;
+};
+
+__device__ PasswordMatch d_matches[1000];
+__device__ unsigned int match_count = 0;
+
+__device__ unsigned int debug_count = 0;
 
 __global__ void find_passwords_optimized_multi(
     const uint8_t* __restrict__ salt,                
@@ -582,20 +592,17 @@ __global__ void find_passwords_optimized_multi(
 ) {
     __shared__ uint8_t shared_salt[8];
    
-    // Load salt into shared memory once per block
     if (threadIdx.x < 8) {
         shared_salt[threadIdx.x] = salt[threadIdx.x];
     }
     __syncthreads();
    
-    // Calculate base index for this thread
     const long long base_index = lowest_unfound_index + blockIdx.x * blockDim.x + threadIdx.x;
    
-    // Pre-initialize SHA256 with salt
     SHA256 sha256;
     sha256.update(shared_salt, 8);
+
    
-    // Process multiple passwords per thread
     #pragma unroll 4
     for (int i = 0; i < batch_size; i++) {
         const long long idx = base_index + i * gridDim.x * blockDim.x;
@@ -604,31 +611,21 @@ __global__ void find_passwords_optimized_multi(
         char password[7];
         generate_password(idx, password);
        
-        // Reset SHA256 state to after-salt state and update with password
         sha256.resetToSaltState();
         sha256.update((const uint8_t*)password, 6);
        
         uint8_t hash[32];
         sha256.digest(hash);
 
-        // Warp-synchronized hash comparison
-        #pragma unroll 4
-        for (int j = 0; j < num_target_hashes; j++) {
-            if (compareUint8Arrays(hash, target_hashes + j * 32, 32)) {
-                unsigned int result_idx = atomicAdd(&found_count, 1);
-                if (result_idx < 1000) { // Limit results to prevent buffer overflow
-                    printf("%.2x%.2x%.2x...:%02x%02x%02x...:%s (index: %lld)\n",
-                        target_hashes[j * 32], target_hashes[j * 32 + 1], target_hashes[j * 32 + 2],
-                        shared_salt[0], shared_salt[1], shared_salt[2],
-                        password, idx);
-                }
-            }
-        }
+        
     }
 }
 
-// Main function updates
+
+
 int main() {
+    std::ofstream outFile("found_passwords.txt");
+    
     int maxThreadsPerBlock;
     int maxBlocksPerSM;
     int numSMs;
@@ -645,7 +642,6 @@ int main() {
     HashPair all_hashes[MAX_HASHES];
     int num_hashes = 0;
 
-    // File reading remains the same
     std::ifstream infile("in.txt");
     if (!infile) {
         std::cerr << "Unable to open file in.txt";
@@ -678,15 +674,19 @@ int main() {
     cudaMemcpy(d_target_salts, all_target_salts, num_hashes * 8, cudaMemcpyHostToDevice);
     cudaMemcpy(d_target_hashes, all_target_hashes, num_hashes * 32, cudaMemcpyHostToDevice);
 
-    // Optimized launch configuration
-    int blockSize = 256;
+    int blockSize = 1024;
     int batch_size = 100;
     int numBlocks = numSMs * 32;
     unsigned long long lowest_unfound_index = 0;
 
+    unsigned int host_match_count = 0;
+    PasswordMatch* host_matches = new PasswordMatch[1000];
+    
     auto start_time = std::chrono::high_resolution_clock::now();
 
     while (lowest_unfound_index < total_passwords) {
+        cudaMemcpyToSymbol(match_count, &host_match_count, sizeof(unsigned int));
+        
         find_passwords_optimized_multi<<<numBlocks, blockSize>>>(
             d_target_salts,
             d_target_hashes,
@@ -694,18 +694,38 @@ int main() {
             batch_size,
             lowest_unfound_index
         );
-        cudaDeviceSynchronize();
+        
+        // cudaMemcpyFromSymbol(&host_match_count, match_count, sizeof(unsigned int));
+        // if (host_match_count > 0) {
+        //     cudaMemcpyFromSymbol(host_matches, d_matches, sizeof(PasswordMatch) * host_match_count);
+            
+        //     for (unsigned int i = 0; i < host_match_count; i++) {
+        //         const PasswordMatch& match = host_matches[i];
+        //         std::string result = std::string(match.password) + ":" + 
+        //                            all_hashes[match.hash_index].salt + ":" +
+        //                            all_hashes[match.hash_index].hash + 
+        //                            " (index: " + std::to_string(match.password_index) + ")\n";
+                
+        //         outFile << result;
+        //         std::cout << result;
+        //         std::cout.flush();
+        //     }
+        //     outFile.flush();
+        // }
+        
         lowest_unfound_index += numBlocks * blockSize * batch_size;
     }
 
     auto end_time = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> elapsed_seconds = end_time - start_time;
+    double hash_rate = total_passwords / elapsed_seconds.count() / 1e9;
 
-    printf("\nTotal time: %.2f seconds\n", elapsed_seconds.count());
-    printf("Performance: %.2f GH/s\n", total_passwords / elapsed_seconds.count() / 1e9);
+    std::cout << "\nTotal time: " << elapsed_seconds.count() << " seconds\n";
+    std::cout << "Performance: " << hash_rate << " GH/s\n";
 
+    delete[] host_matches;
     cudaFree(d_target_salts);
     cudaFree(d_target_hashes);
-
+    
     return 0;
 }
