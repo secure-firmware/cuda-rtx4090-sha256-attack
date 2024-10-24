@@ -84,13 +84,6 @@ private:
         }
         m[15] = 112;
 
-        // inspect_message_block();
-        
-        // printf("Initial message block (W0-W15):\n");
-        // for(int i = 0; i < 16; i++) {
-        //     printf("W%2d: %08x\n", i, m[i]);
-        // }
-        
         // printf("\nMessage schedule expansion (W16-W63):\n");
         for(uint8_t i = 16; i < 64; i++) {
             uint32_t s0 = rotr(m[i-15], 7) ^ rotr(m[i-15], 18) ^ (m[i-15] >> 3);

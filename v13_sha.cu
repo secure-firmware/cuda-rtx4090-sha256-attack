@@ -48,21 +48,84 @@ __constant__ static const uint32_t K[64] = {
 __constant__ char d_target_salt[16 + 1];
 __constant__ uint8_t d_target_hash[32];
 
-class SHA256
-{
-public:
-    uint32_t m_state[8]; // A, B, C, D, E, F, G, H
-    uint32_t m_saltState[8]; // State after salt processing
-    uint64_t m_saltBitlen; // Bit length after salt processing
-    uint32_t m_saltBlocklen; // Block length after salt processing
+class SHA256 {
+private:
+    uint32_t m_state[8];
+    uint8_t m_data[64];
+    uint32_t m_blocklen;
+    uint64_t m_bitlen;
 
-    __device__ __host__ SHA256()
-    {
+    __device__ static uint32_t rotr(uint32_t x, uint32_t n) {
+        return (x >> n) | (x << (32 - n));
+    }
+
+    __device__ static uint32_t choose(uint32_t e, uint32_t f, uint32_t g) {
+        return (e & f) ^ (~e & g);
+    }
+
+    __device__ static uint32_t majority(uint32_t a, uint32_t b, uint32_t c) {
+        return (a & (b | c)) | (b & c);
+    }
+
+    __device__ void transform() {
+        uint32_t m[64];
+        uint32_t a = m_state[0];
+        uint32_t b = m_state[1];
+        uint32_t c = m_state[2];
+        uint32_t d = m_state[3];
+        uint32_t e = m_state[4];
+        uint32_t f = m_state[5];
+        uint32_t g = m_state[6];
+        uint32_t h = m_state[7];
+
+        #pragma unroll 16
+        for (uint8_t i = 0, j = 0; i < 16; i++, j += 4) {
+            m[i] = (m_data[j] << 24) | (m_data[j + 1] << 16) | 
+                   (m_data[j + 2] << 8) | m_data[j + 3];
+        }
+
+        #pragma unroll
+        for(uint8_t i = 16; i < 64; i++) {
+            uint32_t s0 = rotr(m[i-15], 7) ^ rotr(m[i-15], 18) ^ (m[i-15] >> 3);
+            uint32_t s1 = rotr(m[i-2], 17) ^ rotr(m[i-2], 19) ^ (m[i-2] >> 10);
+            m[i] = m[i-16] + s0 + m[i-7] + s1;
+        }
+
+        #pragma unroll
+        for(uint8_t i = 0; i < 64; i++) {
+            uint32_t S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+            uint32_t ch = choose(e, f, g);
+            uint32_t temp1 = h + S1 + ch + K[i] + m[i];
+            uint32_t S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+            uint32_t maj = majority(a, b, c);
+            uint32_t temp2 = S0 + maj;
+
+            h = g;
+            g = f;
+            f = e;
+            e = d + temp1;
+            d = c;
+            c = b;
+            b = a;
+            a = temp1 + temp2;
+        }
+
+        m_state[0] += a;
+        m_state[1] += b;
+        m_state[2] += c;
+        m_state[3] += d;
+        m_state[4] += e;
+        m_state[5] += f;
+        m_state[6] += g;
+        m_state[7] += h;
+    }
+
+public:
+    __device__ SHA256() {
         reset();
     }
 
-    __device__ __host__ void reset()
-    {
+    __device__ void reset() {
         m_blocklen = 0;
         m_bitlen = 0;
         m_state[0] = 0x6a09e667;
@@ -75,37 +138,10 @@ public:
         m_state[7] = 0x5be0cd19;
     }
 
-    __device__ __host__ void initWithSalt(const uint8_t *salt, size_t salt_length)
-    {
-        reset();
-        update(salt, salt_length);
-
-        //Store the state after processing with the salt
-        for (int i = 0; i < 8; i++)
-        {
-            m_saltState[i] = m_state[i];
-        }
-        m_saltBitlen = m_bitlen;
-        m_saltBlocklen = m_blocklen;
-    }  
-
-    __device__ __host__ void resetToSaltState()
-    {
-        for (int i = 0; i < 8; i++)
-        {
-            m_state[i] = m_saltState[i];
-        }
-        m_bitlen = m_saltBitlen;
-        m_blocklen = m_saltBlocklen;
-    }
-
-    __device__ __host__ void update(const uint8_t *data, size_t length)
-    {
-        for (size_t i = 0; i < length; i++)
-        {
+    __device__ void update(const uint8_t *data, size_t length) {
+        for (size_t i = 0; i < length; i++) {
             m_data[m_blocklen++] = data[i];
-            if (m_blocklen == 64)
-            {
+            if (m_blocklen == 64) {
                 transform();
                 m_bitlen += 512;
                 m_blocklen = 0;
@@ -113,115 +149,16 @@ public:
         }
     }
 
-    __device__ __host__ void digest(uint8_t *hash)
-    {
-        pad();
-        revert(hash);
-    }
-
-private:
-    uint8_t m_data[64];
-    uint32_t m_blocklen;
-    uint64_t m_bitlen;
-
-    __device__ __host__ static uint32_t rotr(uint32_t x, uint32_t n)
-    {
-        return (x >> n) | (x << (32 - n));
-    }
-
-    __device__ __host__ static uint32_t choose(uint32_t e, uint32_t f, uint32_t g)
-    {
-        return (e & f) ^ (~e & g);
-    }
-
-    __device__ __host__ static uint32_t majority(uint32_t a, uint32_t b, uint32_t c)
-    {
-        return (a & (b | c)) | (b & c);
-    }
-
-    __device__ __host__ static uint32_t sig0(uint32_t x)
-    {
-        return rotr(x, 7) ^ rotr(x, 18) ^ (x >> 3);
-    }
-
-    __device__ __host__ static uint32_t sig1(uint32_t x)
-    {
-        return rotr(x, 17) ^ rotr(x, 19) ^ (x >> 10);
-    }
-
-    __device__ __host__ void transform()
-    {
-        uint32_t maj, xorA, ch, xorE, sum, newA, newE, m[64];
-        uint32_t state[8];
-
-        const uint32_t *k_array = K;
-
-        // Unroll the first loop for processing the message schedule array
-        #pragma unroll 16
-        for (uint8_t i = 0, j = 0; i < 16; i++, j += 4)
-        {
-            m[i] = (m_data[j] << 24) | (m_data[j + 1] << 16) | (m_data[j + 2] << 8) | m_data[j + 3];
-        }
-
-        // Unroll the second loop for the message schedule array
-        #pragma unroll 48
-        for (uint8_t k = 16; k < 64; k++)
-        {
-            m[k] = sig1(m[k - 2]) + m[k - 7] + sig0(m[k - 15]) + m[k - 16];
-        }
-
-        // Initialize state array with the current hash values
-        #pragma unroll 8
-        for (uint8_t i = 0; i < 8; i++)
-        {
-            state[i] = m_state[i];
-        }
-
-        // Main compression loop - fully unroll
-        #pragma unroll 64
-        for (uint8_t i = 0; i < 64; i++)
-        {
-            maj = majority(state[0], state[1], state[2]);
-            xorA = rotr(state[0], 2) ^ rotr(state[0], 13) ^ rotr(state[0], 22);
-
-            ch = choose(state[4], state[5], state[6]);
-            xorE = rotr(state[4], 6) ^ rotr(state[4], 11) ^ rotr(state[4], 25);
-
-            sum = m[i] + k_array[i] + state[7] + ch + xorE;
-            newA = xorA + maj + sum;
-            newE = state[3] + sum;
-
-            state[7] = state[6];
-            state[6] = state[5];
-            state[5] = state[4];
-            state[4] = newE;
-            state[3] = state[2];
-            state[2] = state[1];
-            state[1] = state[0];
-            state[0] = newA;
-        }
-
-        // Add the compressed chunk to the current hash value
-        #pragma unroll 8
-        for (uint8_t i = 0; i < 8; i++)
-        {
-            m_state[i] += state[i];
-        }
-    }
-
-    __device__ __host__ void pad()
-    {
+    __device__ void digest(uint8_t *hash) {
         uint64_t i = m_blocklen;
         uint8_t end = m_blocklen < 56 ? 56 : 64;
 
-        m_data[i++] = 0x80; // Append 1 bit followed by zeros
-        while (i < end)
-        {
+        m_data[i++] = 0x80;
+        while (i < end) {
             m_data[i++] = 0x00;
         }
 
-        if (m_blocklen >= 56)
-        {
+        if (m_blocklen >= 56) {
             transform();
             memset(m_data, 0, 56);
         }
@@ -236,19 +173,17 @@ private:
         m_data[57] = m_bitlen >> 48;
         m_data[56] = m_bitlen >> 56;
         transform();
-    }
 
-    __device__ __host__ void revert(uint8_t *hash)
-    {
-        for (uint8_t i = 0; i < 4; i++)
-        {
-            for (uint8_t j = 0; j < 8; j++)
-            {
-                hash[i + (j * 4)] = (m_state[j] >> (24 - i * 8)) & 0x000000ff;
-            }
+        #pragma unroll
+        for(uint8_t i = 0; i < 8; i++) {
+            hash[i*4] = (m_state[i] >> 24) & 0xFF;
+            hash[i*4 + 1] = (m_state[i] >> 16) & 0xFF;
+            hash[i*4 + 2] = (m_state[i] >> 8) & 0xFF;
+            hash[i*4 + 3] = m_state[i] & 0xFF;
         }
     }
 };
+
 
 #endif
 
