@@ -77,15 +77,15 @@ private:
         uint32_t g = m_state[6];
         uint32_t h = m_state[7];
 
-        // Pack first 14 bytes (password + salt)
-        #pragma unroll 4
-        for (int i = 0; i < 4; i++) {
-            m[i] = (m_data[i*4] << 24) | (m_data[i*4 + 1] << 16) | 
-                   (m_data[i*4 + 2] << 8) | m_data[i*4 + 3];
+        // Correct byte packing for first 14 bytes
+        #pragma unroll 14
+        for (int i = 0; i < 14; i++) {
+            m[i/4] |= (uint32_t)m_data[i] << (24 - 8 * (i % 4));
         }
 
-        // Add padding
-        m[3] = (m[3] & 0xFFFFFF00) | 0x80;  // Append 1 bit after 14 bytes
+        // Add padding after 14 bytes
+        m[3] |= 0x80 << (24 - 8 * (14 % 4));
+        m[15] = 14 * 8;  // Length in bits
         
         // Zero padding
         #pragma unroll
