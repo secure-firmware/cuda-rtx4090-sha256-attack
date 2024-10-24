@@ -52,8 +52,7 @@ class SHA256 {
 private:
     uint32_t m_state[8];
     uint8_t m_data[64];
-    uint32_t m_blocklen;
-    uint64_t m_bitlen;
+    static const uint32_t TOTAL_LENGTH_BITS = 112; // 14 bytes * 8
 
     __device__ static uint32_t rotr(uint32_t x, uint32_t n) {
         return (x >> n) | (x << (32 - n));
@@ -78,12 +77,26 @@ private:
         uint32_t g = m_state[6];
         uint32_t h = m_state[7];
 
-        #pragma unroll 16
-        for (uint8_t i = 0, j = 0; i < 16; i++, j += 4) {
-            m[i] = (m_data[j] << 24) | (m_data[j + 1] << 16) | 
-                   (m_data[j + 2] << 8) | m_data[j + 3];
+        // Pack first 14 bytes (password + salt)
+        #pragma unroll 4
+        for (int i = 0; i < 4; i++) {
+            m[i] = (m_data[i*4] << 24) | (m_data[i*4 + 1] << 16) | 
+                   (m_data[i*4 + 2] << 8) | m_data[i*4 + 3];
         }
 
+        // Add padding
+        m[3] = (m[3] & 0xFFFFFF00) | 0x80;  // Append 1 bit after 14 bytes
+        
+        // Zero padding
+        #pragma unroll
+        for(int i = 4; i < 15; i++) {
+            m[i] = 0;
+        }
+        
+        // Length in bits (112)
+        m[15] = TOTAL_LENGTH_BITS;
+
+        // Message schedule
         #pragma unroll
         for(uint8_t i = 16; i < 64; i++) {
             uint32_t s0 = rotr(m[i-15], 7) ^ rotr(m[i-15], 18) ^ (m[i-15] >> 3);
@@ -91,6 +104,7 @@ private:
             m[i] = m[i-16] + s0 + m[i-7] + s1;
         }
 
+        // Main compression loop
         #pragma unroll
         for(uint8_t i = 0; i < 64; i++) {
             uint32_t S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
@@ -126,8 +140,6 @@ public:
     }
 
     __device__ void reset() {
-        m_blocklen = 0;
-        m_bitlen = 0;
         m_state[0] = 0x6a09e667;
         m_state[1] = 0xbb67ae85;
         m_state[2] = 0x3c6ef372;
@@ -139,41 +151,15 @@ public:
     }
 
     __device__ void update(const uint8_t *data, size_t length) {
+        // Copy data to internal buffer
         for (size_t i = 0; i < length; i++) {
-            m_data[m_blocklen++] = data[i];
-            if (m_blocklen == 64) {
-                transform();
-                m_bitlen += 512;
-                m_blocklen = 0;
-            }
+            m_data[i] = data[i];
         }
     }
 
     __device__ void digest(uint8_t *hash) {
-        uint64_t i = m_blocklen;
-        uint8_t end = m_blocklen < 56 ? 56 : 64;
-
-        m_data[i++] = 0x80;
-        while (i < end) {
-            m_data[i++] = 0x00;
-        }
-
-        if (m_blocklen >= 56) {
-            transform();
-            memset(m_data, 0, 56);
-        }
-
-        m_bitlen += m_blocklen * 8;
-        m_data[63] = m_bitlen;
-        m_data[62] = m_bitlen >> 8;
-        m_data[61] = m_bitlen >> 16;
-        m_data[60] = m_bitlen >> 24;
-        m_data[59] = m_bitlen >> 32;
-        m_data[58] = m_bitlen >> 40;
-        m_data[57] = m_bitlen >> 48;
-        m_data[56] = m_bitlen >> 56;
         transform();
-
+        
         #pragma unroll
         for(uint8_t i = 0; i < 8; i++) {
             hash[i*4] = (m_state[i] >> 24) & 0xFF;
@@ -185,7 +171,47 @@ public:
 };
 
 
+
 #endif
+
+__device__ bool compareArrays(const uint8_t* arr1, const uint8_t* arr2, size_t length) {
+    for (size_t i = 0; i < length; ++i) {
+        if (arr1[i] != arr2[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+__device__ void test_sha256() {
+    const char* test_password = "jNdRTA";  // 6 bytes
+    const uint8_t test_salt[8] = {0x0e, 0x8b, 0x22, 0xdf, 0xc5, 0x89, 0xe8, 0x7a}; // 8 bytes
+    uint8_t hash[32];
+    
+    // Expected hash for "jNdRTA" with salt "0e8b22dfc589e87a"
+    const uint8_t expected[32] = {
+        0x82, 0x05, 0xde, 0x54, 0xcb, 0x32, 0x3e, 0x67,
+        0xfb, 0x2c, 0x62, 0x74, 0xa2, 0xad, 0x4b, 0xd0,
+        0x9c, 0xd8, 0x16, 0x24, 0xa0, 0x3b, 0x84, 0x82,
+        0xfb, 0x61, 0x92, 0xee, 0x22, 0x16, 0x53, 0x2d
+    };
+
+    SHA256 sha256;
+    sha256.update((const uint8_t*)test_password, 6);
+    sha256.update(test_salt, 8);
+    sha256.digest(hash);
+
+    // Print results
+    printf("Test password: %s\n", test_password);
+    printf("Test salt: ");
+    for(int i = 0; i < 8; i++) printf("%02x", test_salt[i]);
+    printf("\nComputed hash: ");
+    for(int i = 0; i < 32; i++) printf("%02x", hash[i]);
+    printf("\nExpected hash: ");
+    for(int i = 0; i < 32; i++) printf("%02x", expected[i]);
+    printf("\nTest %s\n", compareArrays(hash, expected, 32) == 0 ? "PASSED" : "FAILED");
+}
+
 
 
 
@@ -226,6 +252,10 @@ __global__ void find_passwords_optimized_multi(
     unsigned long long lowest_unfound_index  
 ) {
     long long base_index = lowest_unfound_index + blockIdx.x * blockDim.x + threadIdx.x;
+
+    if(base_index == 0) {
+        test_sha256(); // Add test here
+    }
 
     for (int i = 0; i < batch_size; i++) {
         long long idx = base_index + i * gridDim.x * blockDim.x;
