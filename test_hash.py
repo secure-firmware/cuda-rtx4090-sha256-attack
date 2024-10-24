@@ -50,3 +50,10 @@ def test_all_hash_combinations():
 
 if __name__ == "__main__":
     test_all_hash_combinations()
+
+
+
+# 5. Password + salt bytes:
+# Message: 6b314741343405252331f5545f0b
+# Hash: cc84aac572dbc18adfd93d11dbc83d7c260aca2f6838a8dcdf45b083ae811e2d
+# Match: True
